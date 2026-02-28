@@ -330,6 +330,7 @@ const BoardBackground = React.memo(() => {
 const PlayerCard = ({ pk, state }) => {
   const p = state.players[pk];
   const color = COLORS[pk];
+  
   if (!p) return (
     <div className={`player-card card-${pk} empty`}>
       <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#333' }} />
@@ -339,20 +340,26 @@ const PlayerCard = ({ pk, state }) => {
 
   const isActive = state.ti === ORDER.indexOf(pk) && !state.winner;
   const isWinner = state.winner === pk;
+  const isOffline = p.isOnline === false;
 
   return (
     <div className={`player-card card-${pk} ${isActive ? 'active' : ''}`} style={{
       borderColor: isActive || isWinner ? color.fill : 'rgba(255,255,255,0.08)',
       boxShadow: isActive || isWinner ? `0 0 15px ${color.shadow}, 0 5px 20px rgba(0,0,0,0.8)` : '0 5px 15px rgba(0,0,0,0.5)',
       background: isActive ? 'rgba(20, 25, 32, 0.95)' : 'rgba(15, 20, 26, 0.8)',
+      opacity: isOffline ? 0.6 : 1
     }}>
       <div className="avatar-box" style={{ background: '#111', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${color.fill}`, boxShadow: `inset 0 0 10px ${color.muted}` }}>
         {p.avatar}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ color: 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>
-          {p.name.substring(0,8).toUpperCase()} {isWinner && '🏆'}
-        </span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+           <span style={{ color: 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>
+             {p.name.substring(0,8).toUpperCase()} {isWinner && '🏆'}
+           </span>
+           {/* UI BADGE FOR OFFLINE PLAYERS */}
+           {isOffline && <span style={{ background: '#FF4655', color: '#000', fontSize: 8, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold' }}>OFFLINE</span>}
+        </div>
         <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
           {state.tokens[pk].map((t, i) => (
              <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: t.pos >= 56 ? color.fill : (t.pos >= 0 ? color.fill : '#222'), boxShadow: t.pos >= 0 ? `0 0 5px ${color.shadow}` : 'none', border: `1px solid ${t.pos >= 0 ? color.fill : '#444'}` }} />
@@ -379,46 +386,34 @@ export default function App() {
   const forceWinSentRef = useRef(false);
 
   const [now, setNow] = useState(Date.now());
-  
-  // GLOBAL PRESENCE STATE
   const [globalPlayers, setGlobalPlayers] = useState(0);
 
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
 
-  // GLOBAL PRESENCE EFFECT (New!)
+  // Global Presence
   useEffect(() => {
     if (!db) return;
     const connectedRef = ref(db, ".info/connected");
     const myPresenceRef = ref(db, `global-presence/${myId}`);
     
-    // When this client connects to Firebase, add their ID to global-presence
     const unsubConnected = onValue(connectedRef, (snap) => {
       if (snap.val() === true) {
         set(myPresenceRef, true);
-        // Automatically remove it when they disconnect
         onDisconnect(myPresenceRef).remove();
       }
     });
 
-    // Listen to the total count of players in global-presence
     const totalPresenceRef = ref(db, 'global-presence');
     const unsubPresenceCount = onValue(totalPresenceRef, (snap) => {
-      if (snap.exists()) {
-        setGlobalPlayers(Object.keys(snap.val()).length);
-      } else {
-        setGlobalPlayers(0);
-      }
+      if (snap.exists()) setGlobalPlayers(Object.keys(snap.val()).length);
+      else setGlobalPlayers(0);
     });
 
-    return () => {
-      unsubConnected();
-      unsubPresenceCount();
-      // Clean up marker on unmount
-      set(myPresenceRef, null); 
-    };
+    return () => { unsubConnected(); unsubPresenceCount(); set(myPresenceRef, null); };
   }, [myId]);
 
+  // Local Storage Reconnect
   useEffect(() => {
     const savedSession = localStorage.getItem('ludo_session');
     if (savedSession) {
@@ -428,6 +423,7 @@ export default function App() {
     }
   }, []);
 
+  // Room State Sync
   useEffect(() => {
     if (!db || !roomId) return;
     const gameRef = ref(db, `ludo-rooms/${roomId}`);
@@ -439,6 +435,24 @@ export default function App() {
     return () => unsubscribe();
   }, [roomId]);
 
+  // SPECIFIC DISCONNECT HANDLING (Lobby vs Active Game)
+  useEffect(() => {
+    if (!db || !roomId || !myColor || !state?.phase) return;
+
+    const myPlayerRef = ref(db, `ludo-rooms/${roomId}/players/${myColor}`);
+    const myOnlineRef = ref(db, `ludo-rooms/${roomId}/players/${myColor}/isOnline`);
+
+    if (state.phase === 'lobby') {
+        set(myOnlineRef, true);
+        onDisconnect(myPlayerRef).remove(); // Full remove if they leave lobby
+    } else if (state.phase === 'playing') {
+        onDisconnect(myPlayerRef).cancel(); // Cancel full remove
+        set(myOnlineRef, true);
+        onDisconnect(myOnlineRef).set(false); // Just mark offline
+    }
+  }, [roomId, myColor, state?.phase]);
+
+  // Clock Sync
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
@@ -452,34 +466,61 @@ export default function App() {
     });
   };
 
-  const timeLeft = state && state.phase === 'playing' && !state.winner 
-    ? Math.max(0, 20 - Math.floor((now - (state.lastUpdatedAt || Date.now())) / 1000))
+  // RAW Time calculation (allows negative numbers for Waterfall)
+  const rawTimeLeft = state && state.phase === 'playing' && !state.winner 
+    ? 20 - Math.floor((now - (state.lastUpdatedAt || Date.now())) / 1000)
     : 20;
+    
+  const displayTimeLeft = Math.max(0, rawTimeLeft);
 
+  // AUTO-SKIP & P2P WATERFALL RESTORED
   useEffect(() => {
     if (!state || state.phase !== 'playing' || !!state.winner || rolling) return;
-    const isHost = state.hostId === myId;
-    if (isHost && timeLeft === 0) {
-      dispatchToFirebase({ type: 'AUTO_RESOLVE_TURN', expectedTi: state.ti });
-    }
-  }, [timeLeft, state?.phase, state?.winner, rolling, myId, state?.hostId, state?.ti]);
 
+    const cur = ORDER[state.ti];
+    const isMyTurn = state.players[cur]?.id === myId;
+    const isHost = state.hostId === myId;
+    const isOffline = state.players[cur]?.isOnline === false;
+
+    const forceAction = () => {
+      dispatchToFirebase({ type: 'AUTO_RESOLVE_TURN', expectedTi: state.ti });
+    };
+
+    // Fast-forward offline players instantly (Host executes to prevent multiple firings)
+    if (isOffline && isHost && rawTimeLeft <= 18) { forceAction(); }
+    // P2P Waterfall Safety Net
+    else if (rawTimeLeft === 0 && isMyTurn) { forceAction(); }
+    else if (rawTimeLeft === -2 && isHost && !isMyTurn) { forceAction(); }
+    else if (rawTimeLeft <= -4 && !isHost && !isMyTurn) { forceAction(); }
+
+  }, [rawTimeLeft, state?.phase, state?.winner, rolling, myId, state?.hostId, state?.ti, state?.players]);
+
+  // HOST MIGRATION & FORCE WIN LOGIC
   useEffect(() => {
-    if (state && state.phase === 'playing') {
+    if (state) {
       const activeColors = ORDER.filter(pk => state.players[pk]);
-      const hostStillExists = Object.values(state.players).some(p => p.id === state.hostId);
-      
-      if (!hostStillExists && activeColors.length > 0 && state.players[activeColors[0]].id === myId) {
-        dispatchToFirebase({ type: 'UPDATE_HOST', payload: myId });
+      const currentHostPk = ORDER.find(pk => state.players[pk]?.id === state.hostId);
+      const hostIsOffline = currentHostPk ? state.players[currentHostPk].isOnline === false : true;
+
+      // Host Migration
+      if (hostIsOffline && activeColors.length > 0) {
+          const nextEligibleHost = activeColors.find(pk => state.players[pk].isOnline !== false);
+          if (nextEligibleHost && state.players[nextEligibleHost].id === myId) {
+              dispatchToFirebase({ type: 'UPDATE_HOST', payload: myId });
+          }
       }
-      
-      if (activeColors.length === 1 && !state.winner && state.players[activeColors[0]].id === myId) {
-        if (!forceWinSentRef.current) {
-           forceWinSentRef.current = true;
-           setTimeout(() => dispatchToFirebase({ type: 'FORCE_WIN', payload: activeColors[0] }), 500);
-        }
-      } else {
-        forceWinSentRef.current = false;
+
+      // Force Win Logic
+      if (state.phase === 'playing') {
+          const onlineColors = activeColors.filter(pk => state.players[pk].isOnline !== false);
+          if (onlineColors.length === 1 && !state.winner && state.players[onlineColors[0]].id === myId) {
+              if (!forceWinSentRef.current) {
+                  forceWinSentRef.current = true;
+                  setTimeout(() => dispatchToFirebase({ type: 'FORCE_WIN', payload: onlineColors[0] }), 500);
+              }
+          } else if (onlineColors.length > 1) {
+              forceWinSentRef.current = false;
+          }
       }
     }
   }, [state, myId]);
@@ -492,7 +533,7 @@ export default function App() {
     const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
     const initial = {
       phase: 'lobby', hostId: myId,
-      players: { RED: { id: myId, name: myName, avatar } },
+      players: { RED: { id: myId, name: myName, avatar, isOnline: true } },
       tokens: initTokens(), ti: 0, rolled: null, hasRolled: false,
       msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...', consec: initConsec(), lastUpdatedAt: Date.now()
     };
@@ -513,24 +554,22 @@ export default function App() {
       if (!roomData) { joinStatus = 'not_found'; return roomData; }
       
       if (roomData.phase !== 'lobby') {
-        const existingPlayerColor = ORDER.find(pk => roomData.players[pk]?.id === myId || roomData.players[pk]?.name === myName);
+        const existingPlayerColor = ORDER.find(pk => roomData.players[pk]?.id === myId);
         if (existingPlayerColor) {
           joinStatus = 'reconnect';
           finalColor = existingPlayerColor;
-          if (roomData.players[existingPlayerColor].id !== myId) {
-             roomData.players[existingPlayerColor].id = myId;
-          }
+          roomData.players[existingPlayerColor].isOnline = true;
           return roomData;
         }
         joinStatus = 'in_progress';
         return;
       }
       
-      let assignedColor = ORDER.find(pk => roomData.players[pk]?.id === myId || roomData.players[pk]?.name === myName);
+      let assignedColor = ORDER.find(pk => roomData.players[pk]?.id === myId);
       if (assignedColor) {
          joinStatus = 'reconnect';
          finalColor = assignedColor;
-         roomData.players[assignedColor].id = myId;
+         roomData.players[assignedColor].isOnline = true;
          return roomData;
       }
 
@@ -541,7 +580,7 @@ export default function App() {
       const availableAvatars = AVATARS.filter(a => !usedAvatars.includes(a));
       const avatar = availableAvatars.length > 0 ? availableAvatars[Math.floor(Math.random() * availableAvatars.length)] : '🤖';
 
-      roomData.players[assignedColor] = { id: myId, name: myName, avatar };
+      roomData.players[assignedColor] = { id: myId, name: myName, avatar, isOnline: true };
       joinStatus = 'joined';
       finalColor = assignedColor;
       return roomData;
@@ -653,7 +692,6 @@ export default function App() {
           <h1 style={{ fontSize: 'clamp(32px, 8vw, 64px)', fontWeight: 900, letterSpacing: '10px', marginBottom: 10 }} className="neon-text">LUDO<span style={{color: COLORS.RED.fill}}>.</span></h1>
           <p style={{ color: '#666', fontSize: 14, marginBottom: 30, letterSpacing: '4px' }}>TACTICAL MULTIPLAYER</p>
           
-          {/* New Global Player Count UI */}
           <div style={{ background: 'rgba(0, 234, 141, 0.1)', border: `1px solid ${COLORS.GREEN.fill}`, color: COLORS.GREEN.fill, padding: '6px 12px', borderRadius: 20, fontSize: 10, fontWeight: 'bold', letterSpacing: '1px', marginBottom: 40, display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ height: 6, width: 6, borderRadius: '50%', background: COLORS.GREEN.fill, display: 'inline-block', boxShadow: `0 0 8px ${COLORS.GREEN.fill}` }}></span>
             {globalPlayers} AGENTS ONLINE
@@ -756,39 +794,7 @@ export default function App() {
       </div>
 
       <div className="game-arena">
-        {ORDER.map(pk => {
-          const p = state.players[pk];
-          const isActive = state.ti === ORDER.indexOf(pk) && !state.winner;
-          const isWinner = state.winner === pk;
-          const color = COLORS[pk];
-          
-          return (
-            <div key={pk} className={`player-card card-${pk} ${!p ? 'empty' : ''} ${isActive ? 'active' : ''}`} style={{
-              borderColor: isActive || isWinner ? color.fill : 'rgba(255,255,255,0.08)',
-              boxShadow: isActive || isWinner ? `0 0 15px ${color.shadow}, 0 5px 20px rgba(0,0,0,0.8)` : '0 5px 15px rgba(0,0,0,0.5)',
-              background: isActive ? 'rgba(20, 25, 32, 0.95)' : 'rgba(15, 20, 26, 0.8)',
-            }}>
-              {p ? (
-                <>
-                  <div className="avatar-box" style={{ border: `1px solid ${color.fill}`, boxShadow: `inset 0 0 10px ${color.muted}` }}>{p.avatar}</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ color: 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>{p.name.substring(0,8).toUpperCase()} {isWinner && '🏆'}</span>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-                      {state.tokens[pk].map((t, i) => (
-                        <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: t.pos >= 56 ? color.fill : (t.pos >= 0 ? color.fill : '#222'), boxShadow: t.pos >= 0 ? `0 0 5px ${color.shadow}` : 'none', border: `1px solid ${t.pos >= 0 ? color.fill : '#444'}` }} />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#333' }} />
-                  <span style={{color: '#555', fontSize: 12}}>SLOT OPEN</span>
-                </>
-              )}
-            </div>
-          );
-        })}
+        {ORDER.map(pk => <PlayerCard key={pk} pk={pk} state={state} />)}
 
         <div className="board-container">
           <svg viewBox={`0 0 ${W} ${W}`} style={{ display: 'block', width: '100%', height: '100%', borderRadius: 4, touchAction: 'none' }}>
@@ -869,8 +875,8 @@ export default function App() {
             <Dice value={state.rolled || visualDice} rolling={rolling} onClick={rollDice} disabled={state.hasRolled || rolling || !!state.winner || !isMyTurn} activeColor={displayColor} />
           </div>
           {!state.winner && state.phase === 'playing' && (
-             <div style={{ fontSize: 10, color: isMyTurn ? displayColor.fill : '#888', marginTop: 10, letterSpacing: '2px', fontWeight: 'bold' }}>
-               {isMyTurn ? (state.hasRolled ? `SELECT UNIT (${Math.max(0, timeLeft)}S)` : `AWAITING ROLL (${Math.max(0, timeLeft)}S)`) : `STANDBY`}
+             <div style={{ fontSize: 10, color: displayTimeLeft <= 5 ? '#FF4655' : (isMyTurn ? displayColor.fill : '#888'), marginTop: 10, letterSpacing: '2px', fontWeight: 'bold' }}>
+               {isMyTurn ? (state.hasRolled ? `SELECT UNIT (${displayTimeLeft}S)` : `AWAITING ROLL (${displayTimeLeft}S)`) : `STANDBY`}
              </div>
           )}
         </div>
