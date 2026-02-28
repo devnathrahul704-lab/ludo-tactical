@@ -1,7 +1,8 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef, useReducer } from "react";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, set, onValue, get, onDisconnect, runTransaction } from "firebase/database";
+// IMPORTANT: 'push' has been added to the imports below!
+import { getDatabase, ref, set, onValue, get, onDisconnect, runTransaction, push } from "firebase/database";
 
 // ── 0. FIREBASE SETUP ──────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -211,7 +212,6 @@ function gameReducer(state, action) {
       break;
     }
 
-    // NEW 1-CLICK BOT RESOLUTION FOR AFK PLAYERS
     case 'AUTO_RESOLVE_TURN': {
       let tempState = { ...state };
       if (!tempState.hasRolled) {
@@ -391,8 +391,34 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [globalPlayers, setGlobalPlayers] = useState(0);
 
+  // DECOUPLED CHAT STATE
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const chatEndRef = useRef(null);
+
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
+
+  // Decoupled Firebase Chat Listener
+  useEffect(() => {
+    if (!db || !roomId) return;
+    const chatRef = ref(db, `ludo-chats/${roomId}`);
+    const unsubChat = onValue(chatRef, (snap) => {
+      if (snap.exists()) {
+        const msgs = Object.values(snap.val()).sort((a,b) => a.timestamp - b.timestamp);
+        setChatMessages(msgs);
+      } else {
+        setChatMessages([]);
+      }
+    });
+    return () => unsubChat();
+  }, [roomId]);
+
+  // Auto-scroll chat down
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, isChatOpen]);
 
   useEffect(() => {
     if (!db) return;
@@ -596,6 +622,19 @@ export default function App() {
     window.location.reload();
   };
 
+  // SEND CHAT MESSAGE TO SEPARATE NODE
+  const handleSendMessage = (e) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !db || !roomId) return;
+    push(ref(db, `ludo-chats/${roomId}`), {
+      sender: myName || 'AGENT',
+      color: myColor || 'GRAY',
+      text: chatInput.trim(),
+      timestamp: Date.now()
+    });
+    setChatInput('');
+  };
+
   function triggerParticles(cellR, cellC, color) {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     const ox = cellC * CELL + CELL / 2, oy = cellR * CELL + CELL / 2;
@@ -644,10 +683,35 @@ export default function App() {
     dispatchToFirebase({ type: 'MOVE_TOKEN', payload: { pk, idx }, expectedTi: state.ti });
   }
 
+  // REUSABLE CHAT OVERLAY COMPONENT
+  const ChatUI = () => (
+    isChatOpen ? (
+      <div className="chat-overlay">
+        <div style={{ background: '#111', padding: '12px', fontSize: 12, fontWeight: 'bold', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>COMM LINK</span>
+          <button onClick={() => setIsChatOpen(false)} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+        </div>
+        <div className="chat-messages">
+          {chatMessages.map((msg, i) => (
+            <div key={i} className="chat-message">
+              <span style={{ color: COLORS[msg.color]?.fill || '#888', fontWeight: 'bold' }}>{msg.sender}: </span>
+              <span style={{ color: '#DDD' }}>{msg.text}</span>
+            </div>
+          ))}
+          <div ref={chatEndRef} />
+        </div>
+        <form onSubmit={handleSendMessage} className="chat-input-area">
+          <input value={chatInput} onChange={e => setChatInput(e.target.value)} className="chat-input" placeholder="Transmit message..." maxLength={150} />
+          <button type="submit" className="chat-send">SEND</button>
+        </form>
+      </div>
+    ) : null
+  );
+
   const globalCss = `
     * { box-sizing: border-box; }
     body { margin: 0; overscroll-behavior-y: none; background-color: #080A0C; }
-    .game-layout { display: flex; flex-direction: column; height: 100dvh; background-image: radial-gradient(circle at center, #1B2027 0%, #080A0C 100%); color: #ffffff; font-family: ${FONT}; overflow: hidden; }
+    .game-layout { display: flex; flex-direction: column; height: 100dvh; background-image: radial-gradient(circle at center, #1B2027 0%, #080A0C 100%); color: #ffffff; font-family: ${FONT}; overflow: hidden; position: relative; }
     .neon-text { text-shadow: 0 0 10px rgba(255,255,255,0.3); }
     .spin-ring { transform-origin: center; animation: spin 3s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -657,6 +721,19 @@ export default function App() {
     .player-card { width: 100%; max-width: 180px; position: absolute; background: rgba(15, 20, 26, 0.9); backdrop-filter: blur(12px); border-radius: 12px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); border: 1px solid #222; min-width: 120px; z-index: 10; }
     .player-card.empty { opacity: 0.5; border-style: dashed; }
     .avatar-box { width: 32px; height: 32px; font-size: 16px; background: #111; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    
+    /* CHAT CSS */
+    .chat-overlay { position: absolute; right: 20px; bottom: 80px; width: 320px; height: 400px; background: rgba(15, 20, 26, 0.95); border: 1px solid #333; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.8); backdrop-filter: blur(10px); }
+    @media (max-width: 600px) { .chat-overlay { right: 10px; left: 10px; bottom: 80px; width: auto; height: 50vh; } }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth; }
+    .chat-messages::-webkit-scrollbar { width: 4px; }
+    .chat-messages::-webkit-scrollbar-track { background: transparent; }
+    .chat-messages::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    .chat-message { font-size: 12px; line-height: 1.4; word-wrap: break-word; }
+    .chat-input-area { display: flex; border-top: 1px solid #333; background: #0A0D12; }
+    .chat-input { flex: 1; background: transparent; border: none; color: white; padding: 12px; font-family: inherit; font-size: 12px; outline: none; }
+    .chat-send { background: transparent; border: none; color: #00EA8D; padding: 0 16px; cursor: pointer; font-weight: bold; font-size: 10px; letter-spacing: 1px; }
+
     @media (max-aspect-ratio: 1/1) {
       .game-arena { grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr auto; align-content: space-evenly; }
       .card-RED { grid-column: 1; grid-row: 1; justify-self: start; position: relative;}
@@ -675,7 +752,7 @@ export default function App() {
       .avatar-box { width: 40px; height: 40px; font-size: 20px; }
       .player-card { padding: 12px 20px; min-width: 160px; gap: 16px; }
     }
-    .tactical-dock { flex-shrink: 0; background: rgba(10, 13, 18, 0.95); border-top: 1px solid #333; padding: 12px 20px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; width: 100%; }
+    .tactical-dock { flex-shrink: 0; background: rgba(10, 13, 18, 0.95); border-top: 1px solid #333; padding: 12px 20px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 10; }
     .btn-action { background: transparent; border: 1px solid #444; color: #888; padding: 12px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; touch-action: manipulation; font-size: 12px; }
     .btn-action.active { color: #000; box-shadow: 0 0 15px var(--glow-color); }
   `;
@@ -722,6 +799,7 @@ export default function App() {
         <div style={{ color: '#555', fontSize: 12, fontWeight: 'bold', letterSpacing: '2px', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>MATCH ID // <span style={{color: '#FFF'}}>{roomId}</span></div>
           <div style={{display: 'flex', gap: 10}}>
+             <button onClick={() => setIsChatOpen(!isChatOpen)} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
              <button onClick={copyRoomCode} style={{ background: '#222', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>COPY</button>
              <button onClick={handleLeaveMatch} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>LEAVE</button>
           </div>
@@ -751,6 +829,7 @@ export default function App() {
             INITIALIZE
           </button>
         ) : <p style={{ color: '#666', marginTop: 40, fontSize: 12, letterSpacing: '2px', textAlign: 'center' }}>AWAITING HOST INITIALIZATION...</p>}
+        {ChatUI()}
       </div>
     );
   }
@@ -787,6 +866,7 @@ export default function App() {
       <div className="top-hud">
         <div>ID: <span style={{color: '#FFF'}}>{roomId}</span></div>
         <div style={{display: 'flex', gap: '10px'}}>
+           <button onClick={() => setIsChatOpen(!isChatOpen)} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
            {state.winner && isHost && (
              <button onClick={() => dispatchToFirebase({type: 'RESTART_GAME'})} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>RESTART MATCH</button>
            )}
@@ -892,6 +972,9 @@ export default function App() {
           </button>
         </div>
       </div>
+      
+      {/* RENDER CHAT UI AT THE VERY TOP LEVEL OF THE APP */}
+      {ChatUI()}
     </div>
   );
 }
