@@ -211,21 +211,25 @@ function gameReducer(state, action) {
       break;
     }
 
+    // NEW 1-CLICK BOT RESOLUTION FOR AFK PLAYERS
     case 'AUTO_RESOLVE_TURN': {
-      if (!state.hasRolled) {
+      let tempState = { ...state };
+      if (!tempState.hasRolled) {
         const final = Math.floor(Math.random() * 6) + 1;
-        return gameReducer(state, { type: 'FINISH_ROLL', payload: { final }, expectedTi: state.ti });
-      } else {
-        const validTokens = state.tokens[cur]
+        tempState = gameReducer(tempState, { type: 'FINISH_ROLL', payload: { final } });
+      }
+      if (tempState.hasRolled && tempState.ti === state.ti) {
+        const validTokens = tempState.tokens[cur]
             .map((t, idx) => ({ idx, pos: t.pos }))
-            .filter(t => canMove(cur, t.pos, state.rolled, state));
+            .filter(t => canMove(cur, t.pos, tempState.rolled, tempState));
         if (validTokens.length > 0) {
             const randomToken = validTokens[Math.floor(Math.random() * validTokens.length)];
-            return gameReducer(state, { type: 'MOVE_TOKEN', payload: { pk: cur, idx: randomToken.idx }, expectedTi: state.ti });
+            tempState = gameReducer(tempState, { type: 'MOVE_TOKEN', payload: { pk: cur, idx: randomToken.idx } });
         } else {
-            return gameReducer(state, { type: 'NEXT_TURN', expectedTi: state.ti });
+            tempState = gameReducer(tempState, { type: 'NEXT_TURN' });
         }
       }
+      return tempState;
     }
 
     case 'KICK_PLAYER': {
@@ -357,7 +361,6 @@ const PlayerCard = ({ pk, state }) => {
            <span style={{ color: 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>
              {p.name.substring(0,8).toUpperCase()} {isWinner && '🏆'}
            </span>
-           {/* UI BADGE FOR OFFLINE PLAYERS */}
            {isOffline && <span style={{ background: '#FF4655', color: '#000', fontSize: 8, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold' }}>OFFLINE</span>}
         </div>
         <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
@@ -391,7 +394,6 @@ export default function App() {
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
 
-  // Global Presence
   useEffect(() => {
     if (!db) return;
     const connectedRef = ref(db, ".info/connected");
@@ -413,7 +415,6 @@ export default function App() {
     return () => { unsubConnected(); unsubPresenceCount(); set(myPresenceRef, null); };
   }, [myId]);
 
-  // Local Storage Reconnect
   useEffect(() => {
     const savedSession = localStorage.getItem('ludo_session');
     if (savedSession) {
@@ -423,7 +424,6 @@ export default function App() {
     }
   }, []);
 
-  // Room State Sync
   useEffect(() => {
     if (!db || !roomId) return;
     const gameRef = ref(db, `ludo-rooms/${roomId}`);
@@ -435,7 +435,6 @@ export default function App() {
     return () => unsubscribe();
   }, [roomId]);
 
-  // SPECIFIC DISCONNECT HANDLING (Lobby vs Active Game)
   useEffect(() => {
     if (!db || !roomId || !myColor || !state?.phase) return;
 
@@ -444,15 +443,14 @@ export default function App() {
 
     if (state.phase === 'lobby') {
         set(myOnlineRef, true);
-        onDisconnect(myPlayerRef).remove(); // Full remove if they leave lobby
+        onDisconnect(myPlayerRef).remove(); 
     } else if (state.phase === 'playing') {
-        onDisconnect(myPlayerRef).cancel(); // Cancel full remove
+        onDisconnect(myPlayerRef).cancel(); 
         set(myOnlineRef, true);
-        onDisconnect(myOnlineRef).set(false); // Just mark offline
+        onDisconnect(myOnlineRef).set(false); 
     }
   }, [roomId, myColor, state?.phase]);
 
-  // Clock Sync
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
@@ -466,14 +464,12 @@ export default function App() {
     });
   };
 
-  // RAW Time calculation (allows negative numbers for Waterfall)
   const rawTimeLeft = state && state.phase === 'playing' && !state.winner 
     ? 20 - Math.floor((now - (state.lastUpdatedAt || Date.now())) / 1000)
     : 20;
     
   const displayTimeLeft = Math.max(0, rawTimeLeft);
 
-  // AUTO-SKIP & P2P WATERFALL RESTORED
   useEffect(() => {
     if (!state || state.phase !== 'playing' || !!state.winner || rolling) return;
 
@@ -486,23 +482,19 @@ export default function App() {
       dispatchToFirebase({ type: 'AUTO_RESOLVE_TURN', expectedTi: state.ti });
     };
 
-    // Fast-forward offline players instantly (Host executes to prevent multiple firings)
     if (isOffline && isHost && rawTimeLeft <= 18) { forceAction(); }
-    // P2P Waterfall Safety Net
     else if (rawTimeLeft === 0 && isMyTurn) { forceAction(); }
     else if (rawTimeLeft === -2 && isHost && !isMyTurn) { forceAction(); }
     else if (rawTimeLeft <= -4 && !isHost && !isMyTurn) { forceAction(); }
 
   }, [rawTimeLeft, state?.phase, state?.winner, rolling, myId, state?.hostId, state?.ti, state?.players]);
 
-  // HOST MIGRATION & FORCE WIN LOGIC
   useEffect(() => {
     if (state) {
       const activeColors = ORDER.filter(pk => state.players[pk]);
       const currentHostPk = ORDER.find(pk => state.players[pk]?.id === state.hostId);
       const hostIsOffline = currentHostPk ? state.players[currentHostPk].isOnline === false : true;
 
-      // Host Migration
       if (hostIsOffline && activeColors.length > 0) {
           const nextEligibleHost = activeColors.find(pk => state.players[pk].isOnline !== false);
           if (nextEligibleHost && state.players[nextEligibleHost].id === myId) {
@@ -510,7 +502,6 @@ export default function App() {
           }
       }
 
-      // Force Win Logic
       if (state.phase === 'playing') {
           const onlineColors = activeColors.filter(pk => state.players[pk].isOnline !== false);
           if (onlineColors.length === 1 && !state.winner && state.players[onlineColors[0]].id === myId) {
@@ -600,6 +591,11 @@ export default function App() {
     alert("Match ID copied to clipboard!");
   };
 
+  const handleLeaveMatch = () => {
+    localStorage.removeItem('ludo_session');
+    window.location.reload();
+  };
+
   function triggerParticles(cellR, cellC, color) {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     const ox = cellC * CELL + CELL / 2, oy = cellR * CELL + CELL / 2;
@@ -655,7 +651,7 @@ export default function App() {
     .neon-text { text-shadow: 0 0 10px rgba(255,255,255,0.3); }
     .spin-ring { transform-origin: center; animation: spin 3s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
-    .top-hud { padding: 12px 20px; display: flex; justify-content: space-between; border-bottom: 1px solid #222; font-size: 11px; letter-spacing: 1px; color: #888; font-weight: bold; flex-shrink: 0; background: rgba(8, 10, 12, 0.5); }
+    .top-hud { padding: 12px 20px; display: flex; justify-content: space-between; border-bottom: 1px solid #222; font-size: 11px; letter-spacing: 1px; color: #888; font-weight: bold; flex-shrink: 0; background: rgba(8, 10, 12, 0.5); align-items: center; }
     .game-arena { flex: 1; display: grid; align-items: center; justify-items: center; padding: 10px; gap: 16px; width: 100%; max-width: 900px; margin: 0 auto; }
     .board-container { position: relative; border-radius: 8px; padding: 6px; background: #FFFFFF; border: 4px solid #1E293B; box-shadow: 0 10px 30px rgba(0,0,0,0.8); width: 100%; aspect-ratio: 1; }
     .player-card { width: 100%; max-width: 180px; position: absolute; background: rgba(15, 20, 26, 0.9); backdrop-filter: blur(12px); border-radius: 12px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); border: 1px solid #222; min-width: 120px; z-index: 10; }
@@ -725,7 +721,10 @@ export default function App() {
         <style>{globalCss}</style>
         <div style={{ color: '#555', fontSize: 12, fontWeight: 'bold', letterSpacing: '2px', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>MATCH ID // <span style={{color: '#FFF'}}>{roomId}</span></div>
-          <button onClick={copyRoomCode} style={{ background: '#222', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>COPY</button>
+          <div style={{display: 'flex', gap: 10}}>
+             <button onClick={copyRoomCode} style={{ background: '#222', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>COPY</button>
+             <button onClick={handleLeaveMatch} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>LEAVE</button>
+          </div>
         </div>
         <h2 style={{ fontSize: 'clamp(20px, 5vw, 24px)', letterSpacing: '4px', marginBottom: 30, marginTop: 30, textAlign: 'center' }}>LOBBY STANDBY</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16, width: '100%', maxWidth: 600 }}>
@@ -787,9 +786,12 @@ export default function App() {
       
       <div className="top-hud">
         <div>ID: <span style={{color: '#FFF'}}>{roomId}</span></div>
-        {state.winner && isHost && (
-           <button onClick={() => dispatchToFirebase({type: 'RESTART_GAME'})} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation'}}>RESTART MATCH</button>
-        )}
+        <div style={{display: 'flex', gap: '10px'}}>
+           {state.winner && isHost && (
+             <button onClick={() => dispatchToFirebase({type: 'RESTART_GAME'})} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>RESTART MATCH</button>
+           )}
+           <button onClick={handleLeaveMatch} style={{background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>LEAVE MATCH</button>
+        </div>
         <div>OP: <span style={{color: COLORS[myColor]?.fill}}>{state.players[myColor]?.name.toUpperCase() || 'STANDBY'}</span></div>
       </div>
 
@@ -876,7 +878,7 @@ export default function App() {
           </div>
           {!state.winner && state.phase === 'playing' && (
              <div style={{ fontSize: 10, color: displayTimeLeft <= 5 ? '#FF4655' : (isMyTurn ? displayColor.fill : '#888'), marginTop: 10, letterSpacing: '2px', fontWeight: 'bold' }}>
-               {isMyTurn ? (state.hasRolled ? `SELECT UNIT (${displayTimeLeft}S)` : `AWAITING ROLL (${displayTimeLeft}S)`) : `STANDBY`}
+               {isMyTurn ? (state.hasRolled ? `SELECT UNIT (${displayTimeLeft}S)` : `AWAITING ROLL (${displayTimeLeft}S)`) : `STANDBY (${displayTimeLeft}S)`}
              </div>
           )}
         </div>
