@@ -248,8 +248,9 @@ function gameReducer(state, action) {
     }
   }
 
+  // FIX: Inject synchronized server time instead of raw local Date.now()
   if (['START_GAME', 'FINISH_ROLL', 'MOVE_TOKEN', 'NEXT_TURN', 'AUTO_RESOLVE_TURN', 'RESTART_GAME'].includes(action.type)) {
-    nextState.lastUpdatedAt = Date.now();
+    nextState.lastUpdatedAt = action.serverTime || Date.now();
   }
   return nextState;
 }
@@ -390,6 +391,9 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [globalPlayers, setGlobalPlayers] = useState(0);
 
+  // CLOCK SYNC: Master Server Offset
+  const serverOffsetRef = useRef(0);
+
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -397,6 +401,32 @@ export default function App() {
 
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
+
+  // Grab Master Clock Offset from Firebase
+  useEffect(() => {
+    if (!db) return;
+    const offsetRef = ref(db, ".info/serverTimeOffset");
+    const unsubOffset = onValue(offsetRef, (snap) => {
+      serverOffsetRef.current = snap.val() || 0;
+    });
+
+    const connectedRef = ref(db, ".info/connected");
+    const myPresenceRef = ref(db, `global-presence/${myId}`);
+    const unsubConnected = onValue(connectedRef, (snap) => {
+      if (snap.val() === true) {
+        set(myPresenceRef, true);
+        onDisconnect(myPresenceRef).remove();
+      }
+    });
+
+    const totalPresenceRef = ref(db, 'global-presence');
+    const unsubPresenceCount = onValue(totalPresenceRef, (snap) => {
+      if (snap.exists()) setGlobalPlayers(Object.keys(snap.val()).length);
+      else setGlobalPlayers(0);
+    });
+
+    return () => { unsubOffset(); unsubConnected(); unsubPresenceCount(); set(myPresenceRef, null); };
+  }, [myId]);
 
   useEffect(() => {
     if (!db || !roomId) return;
@@ -417,37 +447,12 @@ export default function App() {
   }, [chatMessages, isChatOpen]);
 
   useEffect(() => {
-    if (!db) return;
-    const connectedRef = ref(db, ".info/connected");
-    const myPresenceRef = ref(db, `global-presence/${myId}`);
-    
-    const unsubConnected = onValue(connectedRef, (snap) => {
-      if (snap.val() === true) {
-        set(myPresenceRef, true);
-        onDisconnect(myPresenceRef).remove();
-      }
-    });
-
-    const totalPresenceRef = ref(db, 'global-presence');
-    const unsubPresenceCount = onValue(totalPresenceRef, (snap) => {
-      if (snap.exists()) setGlobalPlayers(Object.keys(snap.val()).length);
-      else setGlobalPlayers(0);
-    });
-
-    return () => { unsubConnected(); unsubPresenceCount(); set(myPresenceRef, null); };
-  }, [myId]);
-
-  // FIX 1: SWAPPED TO SESSION STORAGE TO PREVENT MULTI-TAB CONFLICTS + ADDED TRY/CATCH
-  useEffect(() => {
     const savedSession = sessionStorage.getItem('ludo_session');
     if (savedSession) {
       try {
         const parsed = JSON.parse(savedSession);
         if (parsed && parsed.savedId) {
-          setMyId(parsed.savedId); 
-          setMyName(parsed.savedName); 
-          setRoomId(parsed.savedRoom); 
-          setMyColor(parsed.savedColor);
+          setMyId(parsed.savedId); setMyName(parsed.savedName); setRoomId(parsed.savedRoom); setMyColor(parsed.savedColor);
           setViewState('playing');
         }
       } catch (e) {
@@ -489,14 +494,18 @@ export default function App() {
 
   const dispatchToFirebase = (action) => {
     if (!db || !roomId) return;
+    // INJECT THE MASTER SERVER TIME INTO EVERY ACTION
+    const serverAdjustedTime = Date.now() + serverOffsetRef.current;
     runTransaction(ref(db, `ludo-rooms/${roomId}`), (currentState) => {
       if (!currentState) return currentState;
-      return gameReducer(currentState, action);
+      return gameReducer(currentState, { ...action, serverTime: serverAdjustedTime });
     });
   };
 
+  // CALCULATE TIME USING MASTER SERVER CLOCK
+  const adjustedNow = now + serverOffsetRef.current;
   const rawTimeLeft = state && state.phase === 'playing' && !state.winner 
-    ? 20 - Math.floor((now - (state.lastUpdatedAt || Date.now())) / 1000)
+    ? 20 - Math.floor((adjustedNow - (state.lastUpdatedAt || adjustedNow)) / 1000)
     : 20;
     
   const displayTimeLeft = Math.max(0, rawTimeLeft);
@@ -557,7 +566,8 @@ export default function App() {
       phase: 'lobby', hostId: myId,
       players: { RED: { id: myId, name: myName, avatar, isOnline: true } },
       tokens: initTokens(), ti: 0, rolled: null, hasRolled: false,
-      msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...', consec: initConsec(), lastUpdatedAt: Date.now()
+      msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...', consec: initConsec(), 
+      lastUpdatedAt: Date.now() + serverOffsetRef.current // USE MASTER CLOCK
     };
     set(ref(db, `ludo-rooms/${code}`), initial);
     setRoomId(code); setMyColor('RED');
@@ -631,11 +641,13 @@ export default function App() {
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !db || !roomId) return;
+    
+    // FIX: STAMP MESSAGES WITH THE PERFECTLY SYNCED SERVER TIME
     push(ref(db, `ludo-chats/${roomId}`), {
       sender: myName || 'AGENT',
       color: myColor || 'GRAY',
       text: chatInput.trim(),
-      timestamp: Date.now()
+      timestamp: Date.now() + serverOffsetRef.current 
     });
     setChatInput('');
   };
