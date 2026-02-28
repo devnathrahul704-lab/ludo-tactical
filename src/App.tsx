@@ -1,7 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef, useReducer } from "react";
 import { initializeApp } from "firebase/app";
-// IMPORTANT: 'push' has been added to the imports below!
 import { getDatabase, ref, set, onValue, get, onDisconnect, runTransaction, push } from "firebase/database";
 
 // ── 0. FIREBASE SETUP ──────────────────────────────────────────────────────
@@ -332,7 +331,7 @@ const BoardBackground = React.memo(() => {
 });
 
 const PlayerCard = ({ pk, state }) => {
-  const p = state.players[pk];
+  const p = state.players?.[pk];
   const color = COLORS[pk];
   
   if (!p) return (
@@ -364,7 +363,7 @@ const PlayerCard = ({ pk, state }) => {
            {isOffline && <span style={{ background: '#FF4655', color: '#000', fontSize: 8, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold' }}>OFFLINE</span>}
         </div>
         <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-          {state.tokens[pk].map((t, i) => (
+          {state.tokens?.[pk]?.map((t, i) => (
              <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: t.pos >= 56 ? color.fill : (t.pos >= 0 ? color.fill : '#222'), boxShadow: t.pos >= 0 ? `0 0 5px ${color.shadow}` : 'none', border: `1px solid ${t.pos >= 0 ? color.fill : '#444'}` }} />
           ))}
         </div>
@@ -391,7 +390,6 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [globalPlayers, setGlobalPlayers] = useState(0);
 
-  // DECOUPLED CHAT STATE
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -400,7 +398,6 @@ export default function App() {
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
 
-  // Decoupled Firebase Chat Listener
   useEffect(() => {
     if (!db || !roomId) return;
     const chatRef = ref(db, `ludo-chats/${roomId}`);
@@ -415,7 +412,6 @@ export default function App() {
     return () => unsubChat();
   }, [roomId]);
 
-  // Auto-scroll chat down
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, isChatOpen]);
@@ -441,12 +437,22 @@ export default function App() {
     return () => { unsubConnected(); unsubPresenceCount(); set(myPresenceRef, null); };
   }, [myId]);
 
+  // FIX 1: SWAPPED TO SESSION STORAGE TO PREVENT MULTI-TAB CONFLICTS + ADDED TRY/CATCH
   useEffect(() => {
-    const savedSession = localStorage.getItem('ludo_session');
+    const savedSession = sessionStorage.getItem('ludo_session');
     if (savedSession) {
-      const { savedId, savedName, savedRoom, savedColor } = JSON.parse(savedSession);
-      setMyId(savedId); setMyName(savedName); setRoomId(savedRoom); setMyColor(savedColor);
-      setViewState('playing');
+      try {
+        const parsed = JSON.parse(savedSession);
+        if (parsed && parsed.savedId) {
+          setMyId(parsed.savedId); 
+          setMyName(parsed.savedName); 
+          setRoomId(parsed.savedRoom); 
+          setMyColor(parsed.savedColor);
+          setViewState('playing');
+        }
+      } catch (e) {
+        sessionStorage.removeItem('ludo_session');
+      }
     }
   }, []);
 
@@ -456,14 +462,13 @@ export default function App() {
     const unsubscribe = onValue(gameRef, (snapshot) => {
       const serverState = snapshot.val();
       if (serverState) dispatchLocal({ type: 'OVERRIDE_STATE', payload: serverState });
-      else { localStorage.removeItem('ludo_session'); setRoomId(null); setViewState('landing'); }
+      else { sessionStorage.removeItem('ludo_session'); setRoomId(null); setViewState('landing'); }
     });
     return () => unsubscribe();
   }, [roomId]);
 
   useEffect(() => {
     if (!db || !roomId || !myColor || !state?.phase) return;
-
     const myPlayerRef = ref(db, `ludo-rooms/${roomId}/players/${myColor}`);
     const myOnlineRef = ref(db, `ludo-rooms/${roomId}/players/${myColor}/isOnline`);
 
@@ -500,9 +505,9 @@ export default function App() {
     if (!state || state.phase !== 'playing' || !!state.winner || rolling) return;
 
     const cur = ORDER[state.ti];
-    const isMyTurn = state.players[cur]?.id === myId;
+    const isMyTurn = state.players?.[cur]?.id === myId;
     const isHost = state.hostId === myId;
-    const isOffline = state.players[cur]?.isOnline === false;
+    const isOffline = state.players?.[cur]?.isOnline === false;
 
     const forceAction = () => {
       dispatchToFirebase({ type: 'AUTO_RESOLVE_TURN', expectedTi: state.ti });
@@ -517,8 +522,8 @@ export default function App() {
 
   useEffect(() => {
     if (state) {
-      const activeColors = ORDER.filter(pk => state.players[pk]);
-      const currentHostPk = ORDER.find(pk => state.players[pk]?.id === state.hostId);
+      const activeColors = ORDER.filter(pk => state.players?.[pk]);
+      const currentHostPk = ORDER.find(pk => state.players?.[pk]?.id === state.hostId);
       const hostIsOffline = currentHostPk ? state.players[currentHostPk].isOnline === false : true;
 
       if (hostIsOffline && activeColors.length > 0) {
@@ -556,7 +561,7 @@ export default function App() {
     };
     set(ref(db, `ludo-rooms/${code}`), initial);
     setRoomId(code); setMyColor('RED');
-    localStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: 'RED' }));
+    sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: 'RED' }));
   };
 
   const handleJoinRoom = async () => {
@@ -571,7 +576,7 @@ export default function App() {
       if (!roomData) { joinStatus = 'not_found'; return roomData; }
       
       if (roomData.phase !== 'lobby') {
-        const existingPlayerColor = ORDER.find(pk => roomData.players[pk]?.id === myId);
+        const existingPlayerColor = ORDER.find(pk => roomData.players?.[pk]?.id === myId);
         if (existingPlayerColor) {
           joinStatus = 'reconnect';
           finalColor = existingPlayerColor;
@@ -582,7 +587,7 @@ export default function App() {
         return;
       }
       
-      let assignedColor = ORDER.find(pk => roomData.players[pk]?.id === myId);
+      let assignedColor = ORDER.find(pk => roomData.players?.[pk]?.id === myId);
       if (assignedColor) {
          joinStatus = 'reconnect';
          finalColor = assignedColor;
@@ -590,13 +595,14 @@ export default function App() {
          return roomData;
       }
 
-      assignedColor = ORDER.find(pk => !roomData.players[pk]);
+      assignedColor = ORDER.find(pk => !roomData.players?.[pk]);
       if (!assignedColor) { joinStatus = 'full'; return; }
       
-      const usedAvatars = Object.values(roomData.players).map(p => p.avatar);
+      const usedAvatars = Object.values(roomData.players || {}).map(p => p.avatar);
       const availableAvatars = AVATARS.filter(a => !usedAvatars.includes(a));
       const avatar = availableAvatars.length > 0 ? availableAvatars[Math.floor(Math.random() * availableAvatars.length)] : '🤖';
 
+      if (!roomData.players) roomData.players = {};
       roomData.players[assignedColor] = { id: myId, name: myName, avatar, isOnline: true };
       joinStatus = 'joined';
       finalColor = assignedColor;
@@ -607,7 +613,7 @@ export default function App() {
       else if (joinStatus === 'full') alert("Lobby is full.");
       else if (committed && finalColor) {
          setRoomId(code); setMyColor(finalColor);
-         localStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: finalColor }));
+         sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: finalColor }));
       }
     });
   };
@@ -618,11 +624,10 @@ export default function App() {
   };
 
   const handleLeaveMatch = () => {
-    localStorage.removeItem('ludo_session');
+    sessionStorage.removeItem('ludo_session');
     window.location.reload();
   };
 
-  // SEND CHAT MESSAGE TO SEPARATE NODE
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !db || !roomId) return;
@@ -654,7 +659,7 @@ export default function App() {
 
   function rollDice() {
     const cur = ORDER[state.ti];
-    if (rolling || state.hasRolled || state.winner || state.players[cur]?.id !== myId) return;
+    if (rolling || state.hasRolled || state.winner || state.players?.[cur]?.id !== myId) return;
     
     setRolling(true);
     const final = Math.floor(Math.random() * 6) + 1; 
@@ -675,7 +680,7 @@ export default function App() {
 
   function clickToken(pk, idx) {
     const cur = ORDER[state.ti];
-    if (pk !== cur || !state.hasRolled || state.winner || state.players[cur]?.id !== myId) return;
+    if (pk !== cur || !state.hasRolled || state.winner || state.players?.[cur]?.id !== myId) return;
     const currentPos = state.tokens[pk][idx].pos;
     if (!canMove(pk, currentPos, state.rolled, state)) return;
     const targetPos = currentPos < 0 ? 0 : currentPos + state.rolled;
@@ -683,7 +688,6 @@ export default function App() {
     dispatchToFirebase({ type: 'MOVE_TOKEN', payload: { pk, idx }, expectedTi: state.ti });
   }
 
-  // REUSABLE CHAT OVERLAY COMPONENT
   const ChatUI = () => (
     isChatOpen ? (
       <div className="chat-overlay">
@@ -692,7 +696,7 @@ export default function App() {
           <button onClick={() => setIsChatOpen(false)} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
         </div>
         <div className="chat-messages">
-          {chatMessages.map((msg, i) => (
+          {chatMessages?.map((msg, i) => (
             <div key={i} className="chat-message">
               <span style={{ color: COLORS[msg.color]?.fill || '#888', fontWeight: 'bold' }}>{msg.sender}: </span>
               <span style={{ color: '#DDD' }}>{msg.text}</span>
@@ -722,7 +726,6 @@ export default function App() {
     .player-card.empty { opacity: 0.5; border-style: dashed; }
     .avatar-box { width: 32px; height: 32px; font-size: 16px; background: #111; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
     
-    /* CHAT CSS */
     .chat-overlay { position: absolute; right: 20px; bottom: 80px; width: 320px; height: 400px; background: rgba(15, 20, 26, 0.95); border: 1px solid #333; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.8); backdrop-filter: blur(10px); }
     @media (max-width: 600px) { .chat-overlay { right: 10px; left: 10px; bottom: 80px; width: auto; height: 50vh; } }
     .chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth; }
@@ -791,7 +794,7 @@ export default function App() {
 
   if (state.phase === 'lobby') {
     const isHost = state.hostId === myId;
-    const playerCount = Object.values(state.players).filter(Boolean).length;
+    const playerCount = Object.values(state.players || {}).filter(Boolean).length;
     
     return (
       <div className="game-layout" style={{ alignItems: 'center', padding: '20px 20px 40px 20px', overflowY: 'auto' }}>
@@ -807,7 +810,7 @@ export default function App() {
         <h2 style={{ fontSize: 'clamp(20px, 5vw, 24px)', letterSpacing: '4px', marginBottom: 30, marginTop: 30, textAlign: 'center' }}>LOBBY STANDBY</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16, width: '100%', maxWidth: 600 }}>
           {ORDER.map(pk => {
-            const p = state.players[pk];
+            const p = state.players?.[pk];
             const col = COLORS[pk];
             return (
               <div key={pk} style={{ background: p ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.4)', border: `1px solid ${p ? col.fill : '#333'}`, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, boxShadow: p ? `0 0 15px ${col.shadow}` : 'none' }}>
@@ -836,15 +839,15 @@ export default function App() {
 
   const cur = ORDER[state.ti];
   const displayColor = state.winner ? COLORS[state.winner] : COLORS[cur];
-  const activePlayer = state.players[cur];
+  const activePlayer = state.players?.[cur];
   const isMyTurn = activePlayer && activePlayer.id === myId;
   const isHost = state.hostId === myId;
 
   const byCell = {};
   if (state && state.tokens) {
     ORDER.forEach(pk => {
-      if (state.players && state.players[pk]) {
-        state.tokens[pk].forEach((t, idx) => {
+      if (state.players?.[pk]) {
+        state.tokens[pk]?.forEach((t, idx) => {
           if (t.pos >= 0) {
             const c = getCell(pk, t.pos);
             if (c) {
@@ -872,7 +875,7 @@ export default function App() {
            )}
            <button onClick={handleLeaveMatch} style={{background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>LEAVE MATCH</button>
         </div>
-        <div>OP: <span style={{color: COLORS[myColor]?.fill}}>{state.players[myColor]?.name.toUpperCase() || 'STANDBY'}</span></div>
+        <div>OP: <span style={{color: COLORS[myColor]?.fill}}>{state.players?.[myColor]?.name.toUpperCase() || 'STANDBY'}</span></div>
       </div>
 
       <div className="game-arena">
@@ -910,7 +913,7 @@ export default function App() {
             <circle cx={cx0 + cm} cy={cy0 + cm} r={cm * .2} fill="#FFFFFF" stroke="#E2E8F0" strokeWidth="2" />
 
             {ORDER.flatMap(pk => {
-              if (!state.players[pk]) return [];
+              if (!state.players?.[pk] || !state.tokens?.[pk]) return [];
               return state.tokens[pk].map((t, idx) => {
                 const clickable = pk === cur && state.hasRolled && canMove(pk, t.pos, state.rolled, state) && isMyTurn;
                 let targetX, targetY;
@@ -973,7 +976,6 @@ export default function App() {
         </div>
       </div>
       
-      {/* RENDER CHAT UI AT THE VERY TOP LEVEL OF THE APP */}
       {ChatUI()}
     </div>
   );
