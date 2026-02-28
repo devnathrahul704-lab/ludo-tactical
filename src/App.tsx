@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useReducer } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, set, onValue, get, onDisconnect, runTransaction } from "firebase/database";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 // ── 0. FIREBASE SETUP ──────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -884,6 +885,7 @@ export default function App() {
           </button>
         </div>
       </div>
+      <SpeedInsights />
     </div>
   );
 }
