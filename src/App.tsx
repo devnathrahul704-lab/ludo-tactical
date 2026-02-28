@@ -44,26 +44,24 @@ const PATH = [
   [14, 6], [13, 6], [12, 6], [11, 6], [10, 6], [9, 6], [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0], [7, 0],
 ];
 
-// RE-MAPPED TO MATCH HEXAGONAL BOARD IMAGE
 const PD = {
-  YELLOW: { si: 1, hc: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]] }, // Left Arm
-  BLUE: { si: 14, hc: [[1, 7], [2, 7], [3, 7], [4, 7], [5, 7]] }, // Top Arm
-  RED: { si: 27, hc: [[7, 13], [7, 12], [7, 11], [7, 10], [7, 9]] }, // Right Arm
-  GREEN: { si: 40, hc: [[13, 7], [12, 7], [11, 7], [10, 7], [9, 7]] }, // Bottom Arm
+  YELLOW: { si: 1, hc: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]] }, 
+  BLUE: { si: 14, hc: [[1, 7], [2, 7], [3, 7], [4, 7], [5, 7]] }, 
+  RED: { si: 27, hc: [[7, 13], [7, 12], [7, 11], [7, 10], [7, 9]] }, 
+  GREEN: { si: 40, hc: [[13, 7], [12, 7], [11, 7], [10, 7], [9, 7]] }, 
 };
 
 const HOME_SLOTS = {
-  YELLOW: [[2, 2], [4, 2], [2, 4], [4, 4]], // Top Left
-  BLUE: [[11, 2], [13, 2], [11, 4], [13, 4]], // Top Right
-  RED: [[11, 11], [13, 11], [11, 13], [13, 13]], // Bottom Right
-  GREEN: [[2, 11], [4, 11], [2, 13], [4, 13]], // Bottom Left
+  YELLOW: [[2, 2], [4, 2], [2, 4], [4, 4]], 
+  BLUE: [[11, 2], [13, 2], [11, 4], [13, 4]], 
+  RED: [[11, 11], [13, 11], [11, 13], [13, 13]], 
+  GREEN: [[2, 11], [4, 11], [2, 13], [4, 13]], 
 };
 
 const SAFE_STARS = new Set(['8,2', '2,6', '6,12', '12,8']);
 const START_CLR = { '6,1': 'YELLOW', '1,8': 'BLUE', '8,13': 'RED', '13,6': 'GREEN' };
 const SAFE_ALL = new Set([...SAFE_STARS, '6,1', '1,8', '8,13', '13,6']);
 
-// HEXAGON MATH HELPER
 const hexPts = (cx, cy, rad) => Array.from({length: 6}, (_, i) => {
   const angle = (i * Math.PI) / 3 + Math.PI / 6; 
   return `${cx + rad * Math.cos(angle)},${cy + rad * Math.sin(angle)}`;
@@ -298,24 +296,27 @@ function Token({ fill, dark, r, clickable }) {
   );
 }
 
-function Dice({ value, rolling, onClick, disabled, activeColor }) {
+// FIX: Decoupled Dice visuals from clickability. 
+// Now it always shows the active player's bright neon color!
+function Dice({ value, rolling, onClick, isClickable, activeColor, dim }) {
   const sz = 56, dots = {
     1: [[50, 50]], 2: [[25, 25], [75, 75]], 3: [[25, 25], [50, 50], [75, 75]],
     4: [[25, 25], [75, 25], [25, 75], [75, 75]], 5: [[25, 25], [75, 25], [50, 50], [25, 75], [75, 75]],
     6: [[25, 20], [75, 20], [25, 50], [75, 50], [25, 80], [75, 80]],
   }[value] || [[50, 50]];
-  const glow = disabled ? 'none' : `0 0 15px ${activeColor.shadow}`;
+  
+  const glow = dim ? 'none' : `0 0 15px ${activeColor.shadow}`;
   
   return (
-    <div onClick={(!disabled && !rolling) ? onClick : null} style={{
+    <div onClick={(isClickable && !rolling) ? onClick : null} style={{
       width: sz, height: sz, background: '#141920', borderRadius: 12, position: 'relative',
-      cursor: disabled || rolling ? 'default' : 'pointer',
-      boxShadow: `${glow}, 0 4px 10px rgba(0,0,0,0.5)`, opacity: disabled ? 0.4 : 1, transition: 'all 0.2s ease',
+      cursor: (isClickable && !rolling) ? 'pointer' : 'default',
+      boxShadow: `${glow}, 0 4px 10px rgba(0,0,0,0.5)`, opacity: dim ? 0.6 : 1, transition: 'all 0.2s ease',
       transform: rolling ? 'scale(0.9) rotate(15deg)' : 'scale(1) rotate(0deg)',
-      border: `2px solid ${disabled ? '#333' : activeColor.fill}`, touchAction: 'manipulation' 
+      border: `2px solid ${activeColor.fill}`, touchAction: 'manipulation' 
     }}>
       <svg width={sz} height={sz} style={{ position: 'absolute', top: 0, left: 0 }}>
-        {dots.map(([px, py], i) => <circle key={i} cx={sz * px / 100} cy={sz * py / 100} r="4" fill={disabled ? "#666" : activeColor.fill} />)}
+        {dots.map(([px, py], i) => <circle key={i} cx={sz * px / 100} cy={sz * py / 100} r="4" fill={activeColor.fill} />)}
       </svg>
     </div>
   );
@@ -996,7 +997,15 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
           <div style={{ '--glow-color': displayColor.shadow }}>
-            <Dice value={state.rolled || visualDice} rolling={rolling} onClick={rollDice} disabled={state.hasRolled || rolling || !!state.winner || !isMyTurn} activeColor={displayColor} />
+            {/* INCORPORATED UI UPDATE: isClickable isolated from dim states */}
+            <Dice 
+              value={state.rolled || visualDice} 
+              rolling={rolling} 
+              onClick={rollDice} 
+              isClickable={isMyTurn && !state.hasRolled && !state.winner} 
+              activeColor={displayColor} 
+              dim={state.hasRolled || !!state.winner}
+            />
           </div>
           {!state.winner && state.phase === 'playing' && (
              <div style={{ fontSize: 10, color: displayTimeLeft <= 5 ? '#FF4655' : (isMyTurn ? displayColor.fill : '#888'), marginTop: 10, letterSpacing: '2px', fontWeight: 'bold' }}>
