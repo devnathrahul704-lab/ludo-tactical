@@ -14,7 +14,6 @@ const firebaseConfig = {
   appId: "1:1018868732143:web:1671d193e475b87fea0b1a"
 };
 
-
 let db = null;
 try {
   if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
@@ -44,21 +43,31 @@ const PATH = [
   [8, 14], [8, 13], [8, 12], [8, 11], [8, 10], [8, 9], [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8], [14, 7],
   [14, 6], [13, 6], [12, 6], [11, 6], [10, 6], [9, 6], [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0], [7, 0],
 ];
+
+// RE-MAPPED TO MATCH HEXAGONAL BOARD IMAGE
 const PD = {
-  RED: { si: 1, hc: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]] },
-  GREEN: { si: 14, hc: [[1, 7], [2, 7], [3, 7], [4, 7], [5, 7]] },
-  YELLOW: { si: 27, hc: [[7, 13], [7, 12], [7, 11], [7, 10], [7, 9]] },
-  BLUE: { si: 40, hc: [[13, 7], [12, 7], [11, 7], [10, 7], [9, 7]] },
+  YELLOW: { si: 1, hc: [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]] }, // Left Arm
+  BLUE: { si: 14, hc: [[1, 7], [2, 7], [3, 7], [4, 7], [5, 7]] }, // Top Arm
+  RED: { si: 27, hc: [[7, 13], [7, 12], [7, 11], [7, 10], [7, 9]] }, // Right Arm
+  GREEN: { si: 40, hc: [[13, 7], [12, 7], [11, 7], [10, 7], [9, 7]] }, // Bottom Arm
 };
+
 const HOME_SLOTS = {
-  RED: [[2, 2], [4, 2], [2, 4], [4, 4]],
-  GREEN: [[11, 2], [13, 2], [11, 4], [13, 4]],
-  YELLOW: [[11, 11], [13, 11], [11, 13], [13, 13]],
-  BLUE: [[2, 11], [4, 11], [2, 13], [4, 13]],
+  YELLOW: [[2, 2], [4, 2], [2, 4], [4, 4]], // Top Left
+  BLUE: [[11, 2], [13, 2], [11, 4], [13, 4]], // Top Right
+  RED: [[11, 11], [13, 11], [11, 13], [13, 13]], // Bottom Right
+  GREEN: [[2, 11], [4, 11], [2, 13], [4, 13]], // Bottom Left
 };
-const SAFE_STARS = new Set(['0,8', '2,6', '6,2', '8,0', '14,6', '12,8', '8,12', '6,14']);
+
+const SAFE_STARS = new Set(['8,2', '2,6', '6,12', '12,8']);
+const START_CLR = { '6,1': 'YELLOW', '1,8': 'BLUE', '8,13': 'RED', '13,6': 'GREEN' };
 const SAFE_ALL = new Set([...SAFE_STARS, '6,1', '1,8', '8,13', '13,6']);
-const START_CLR = { '6,1': 'RED', '1,8': 'GREEN', '8,13': 'YELLOW', '13,6': 'BLUE' };
+
+// HEXAGON MATH HELPER
+const hexPts = (cx, cy, rad) => Array.from({length: 6}, (_, i) => {
+  const angle = (i * Math.PI) / 3 + Math.PI / 6; 
+  return `${cx + rad * Math.cos(angle)},${cy + rad * Math.sin(angle)}`;
+}).join(' ');
 
 function getStackOffsets(count) {
   if (count === 1) return [[0,0]];
@@ -248,7 +257,6 @@ function gameReducer(state, action) {
     }
   }
 
-  // FIX: Inject synchronized server time instead of raw local Date.now()
   if (['START_GAME', 'FINISH_ROLL', 'MOVE_TOKEN', 'NEXT_TURN', 'AUTO_RESOLVE_TURN', 'RESTART_GAME'].includes(action.type)) {
     nextState.lastUpdatedAt = action.serverTime || Date.now();
   }
@@ -258,10 +266,10 @@ function gameReducer(state, action) {
 // ── 4. UI COMPONENTS ───────────────────────────────────────────────────────
 function getCellBg(r, c) {
   if (r >= 6 && r <= 8 && c >= 6 && c <= 8) return null; 
-  if (r === 7 && c >= 1 && c <= 5) return COLORS.RED.muted;
-  if (c === 7 && r >= 1 && r <= 5) return COLORS.GREEN.muted;
-  if (r === 7 && c >= 9 && c <= 13) return COLORS.YELLOW.muted;
-  if (c === 7 && r >= 9 && r <= 13) return COLORS.BLUE.muted;
+  if (r === 7 && c >= 1 && c <= 5) return COLORS.YELLOW.muted;
+  if (c === 7 && r >= 1 && r <= 5) return COLORS.BLUE.muted;
+  if (r === 7 && c >= 9 && c <= 13) return COLORS.RED.muted;
+  if (c === 7 && r >= 9 && r <= 13) return COLORS.GREEN.muted;
   return TRACK_BG;
 }
 
@@ -274,14 +282,18 @@ const Star = React.memo(({ cx, cy, r }) => {
 });
 
 function Token({ fill, dark, r, clickable }) {
+  const pts1 = hexPts(0, 0, r);
+  const pts2 = hexPts(0, 0, r * 0.75);
+  const pts3 = hexPts(0, 0, r * 0.35);
+
   return (
     <g style={{ cursor: clickable ? 'pointer' : 'default', touchAction: 'manipulation' }}>
       {clickable && <circle r={r + 15} fill="transparent" />}
       {clickable && <circle r={r + 8} fill="none" stroke={fill} strokeWidth="2.5" strokeDasharray="4 4" className="spin-ring" style={{ pointerEvents: 'none' }} />}
-      <circle r={r} cx="2" cy="4" fill="rgba(0,0,0,0.2)" style={{ pointerEvents: 'none' }} /> 
-      <circle r={r} fill={dark} stroke="#FFF" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />
-      <circle r={r * .75} fill={fill} style={{ pointerEvents: 'none' }} />
-      <circle r={r * .35} fill="#FFF" opacity="0.4" style={{ pointerEvents: 'none' }} />
+      <polygon points={pts1} transform="translate(2,4)" fill="rgba(0,0,0,0.2)" style={{ pointerEvents: 'none' }} />
+      <polygon points={pts1} fill={dark} stroke="#FFF" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />
+      <polygon points={pts2} fill={fill} style={{ pointerEvents: 'none' }} />
+      <polygon points={pts3} fill="#FFF" opacity="0.4" style={{ pointerEvents: 'none' }} />
     </g>
   );
 }
@@ -319,11 +331,19 @@ const BoardBackground = React.memo(() => {
       const bg = getCellBg(r, c), x = c * CELL, y = r * CELL;
       cells.push(<rect key={`${r},${c}`} x={x} y={y} width={CELL} height={CELL} fill={bg} stroke={GRID_LINE} strokeWidth="1" />);
       if (SAFE_STARS.has(`${r},${c}`)) overlays.push(<Star key={`s${r},${c}`} cx={x + CELL / 2} cy={y + CELL / 2} r={CELL * .25} />);
+      
       if (START_CLR[`${r},${c}`]) {
         const sf = COLORS[START_CLR[`${r},${c}`]].fill;
+        const getArrow = (r, c) => {
+          if (r===6 && c===1) return '▶';
+          if (r===1 && c===8) return '▼';
+          if (r===8 && c===13) return '◀';
+          if (r===13 && c===6) return '▲';
+          return '▲';
+        };
         overlays.push(<g key={`st${r},${c}`}>
           <rect x={x+4} y={y+4} width={CELL-8} height={CELL-8} fill="transparent" stroke={sf} strokeWidth="2.5" />
-          <text x={x + CELL / 2} y={y + CELL / 2 + 4} textAnchor="middle" fontSize="10" fill={sf} fontWeight="bold">▲</text>
+          <text x={x + CELL / 2} y={y + CELL / 2 + 5} textAnchor="middle" fontSize="16" fill={sf} fontWeight="bold">{getArrow(r,c)}</text>
         </g>);
       }
     }
@@ -365,7 +385,7 @@ const PlayerCard = ({ pk, state }) => {
         </div>
         <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
           {state.tokens?.[pk]?.map((t, i) => (
-             <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: t.pos >= 56 ? color.fill : (t.pos >= 0 ? color.fill : '#222'), boxShadow: t.pos >= 0 ? `0 0 5px ${color.shadow}` : 'none', border: `1px solid ${t.pos >= 0 ? color.fill : '#444'}` }} />
+             <div key={i} style={{ width: 6, height: 6, background: t.pos >= 56 ? color.fill : (t.pos >= 0 ? color.fill : '#222'), boxShadow: t.pos >= 0 ? `0 0 5px ${color.shadow}` : 'none', border: `1px solid ${t.pos >= 0 ? color.fill : '#444'}`, clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' }} />
           ))}
         </div>
       </div>
@@ -391,7 +411,6 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [globalPlayers, setGlobalPlayers] = useState(0);
 
-  // CLOCK SYNC: Master Server Offset
   const serverOffsetRef = useRef(0);
 
   const [chatMessages, setChatMessages] = useState([]);
@@ -402,7 +421,6 @@ export default function App() {
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
 
-  // Grab Master Clock Offset from Firebase
   useEffect(() => {
     if (!db) return;
     const offsetRef = ref(db, ".info/serverTimeOffset");
@@ -494,7 +512,6 @@ export default function App() {
 
   const dispatchToFirebase = (action) => {
     if (!db || !roomId) return;
-    // INJECT THE MASTER SERVER TIME INTO EVERY ACTION
     const serverAdjustedTime = Date.now() + serverOffsetRef.current;
     runTransaction(ref(db, `ludo-rooms/${roomId}`), (currentState) => {
       if (!currentState) return currentState;
@@ -502,7 +519,6 @@ export default function App() {
     });
   };
 
-  // CALCULATE TIME USING MASTER SERVER CLOCK
   const adjustedNow = now + serverOffsetRef.current;
   const rawTimeLeft = state && state.phase === 'playing' && !state.winner 
     ? 20 - Math.floor((adjustedNow - (state.lastUpdatedAt || adjustedNow)) / 1000)
@@ -564,14 +580,14 @@ export default function App() {
     const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
     const initial = {
       phase: 'lobby', hostId: myId,
-      players: { RED: { id: myId, name: myName, avatar, isOnline: true } },
+      players: { YELLOW: { id: myId, name: myName, avatar, isOnline: true } },
       tokens: initTokens(), ti: 0, rolled: null, hasRolled: false,
       msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...', consec: initConsec(), 
-      lastUpdatedAt: Date.now() + serverOffsetRef.current // USE MASTER CLOCK
+      lastUpdatedAt: Date.now() + serverOffsetRef.current 
     };
     set(ref(db, `ludo-rooms/${code}`), initial);
-    setRoomId(code); setMyColor('RED');
-    sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: 'RED' }));
+    setRoomId(code); setMyColor('YELLOW');
+    sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: 'YELLOW' }));
   };
 
   const handleJoinRoom = async () => {
@@ -641,8 +657,6 @@ export default function App() {
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !db || !roomId) return;
-    
-    // FIX: STAMP MESSAGES WITH THE PERFECTLY SYNCED SERVER TIME
     push(ref(db, `ludo-chats/${roomId}`), {
       sender: myName || 'AGENT',
       color: myColor || 'GRAY',
@@ -751,19 +765,19 @@ export default function App() {
 
     @media (max-aspect-ratio: 1/1) {
       .game-arena { grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr auto; align-content: space-evenly; }
-      .card-RED { grid-column: 1; grid-row: 1; justify-self: start; position: relative;}
-      .card-GREEN { grid-column: 2; grid-row: 1; justify-self: end; position: relative;}
+      .card-YELLOW { grid-column: 1; grid-row: 1; justify-self: start; position: relative;}
+      .card-BLUE { grid-column: 2; grid-row: 1; justify-self: end; position: relative;}
       .board-container { grid-column: 1 / 3; grid-row: 2; max-width: 55dvh; }
-      .card-BLUE { grid-column: 1; grid-row: 3; justify-self: start; position: relative;}
-      .card-YELLOW { grid-column: 2; grid-row: 3; justify-self: end; position: relative;}
+      .card-GREEN { grid-column: 1; grid-row: 3; justify-self: start; position: relative;}
+      .card-RED { grid-column: 2; grid-row: 3; justify-self: end; position: relative;}
     }
     @media (min-aspect-ratio: 1/1) {
       .game-arena { grid-template-columns: auto 1fr auto; grid-template-rows: 1fr 1fr; gap: 20px; }
-      .card-RED { grid-column: 1; grid-row: 1; align-self: end; justify-self: end; position: relative; }
-      .card-BLUE { grid-column: 1; grid-row: 2; align-self: start; justify-self: end; position: relative;}
+      .card-YELLOW { grid-column: 1; grid-row: 1; align-self: end; justify-self: end; position: relative; }
+      .card-GREEN { grid-column: 1; grid-row: 2; align-self: start; justify-self: end; position: relative;}
       .board-container { grid-column: 2; grid-row: 1 / 3; height: 100%; max-height: 70dvh; width: auto; }
-      .card-GREEN { grid-column: 3; grid-row: 1; align-self: end; justify-self: start; position: relative;}
-      .card-YELLOW { grid-column: 3; grid-row: 2; align-self: start; justify-self: start; position: relative;}
+      .card-BLUE { grid-column: 3; grid-row: 1; align-self: end; justify-self: start; position: relative;}
+      .card-RED { grid-column: 3; grid-row: 2; align-self: start; justify-self: start; position: relative;}
       .avatar-box { width: 40px; height: 40px; font-size: 20px; }
       .player-card { padding: 12px 20px; min-width: 160px; gap: 16px; }
     }
@@ -873,6 +887,15 @@ export default function App() {
   }
 
   const cx0 = 6 * CELL, cy0 = 6 * CELL, cs = 3 * CELL, cm = 1.5 * CELL;
+  
+  const getBaseCoords = (pk) => {
+    if (pk === 'YELLOW') return {x: 0, y: 0};
+    if (pk === 'BLUE') return {x: 9*CELL, y: 0};
+    if (pk === 'RED') return {x: 9*CELL, y: 9*CELL};
+    if (pk === 'GREEN') return {x: 0, y: 9*CELL};
+    return {x:0, y:0};
+  };
+  const glowCoords = getBaseCoords(cur);
 
   return (
     <div className="game-layout">
@@ -900,28 +923,32 @@ export default function App() {
             
             {!state.winner && (
               <rect 
-                x={ORDER.indexOf(cur) === 0 || ORDER.indexOf(cur) === 3 ? 0 : 9*CELL} 
-                y={ORDER.indexOf(cur) === 0 || ORDER.indexOf(cur) === 1 ? 0 : 9*CELL} 
+                x={glowCoords.x} 
+                y={glowCoords.y} 
                 width={6*CELL} height={6*CELL} fill="none" stroke={COLORS[cur].fill} strokeWidth="4" 
                 style={{ filter: `drop-shadow(0 0 10px ${COLORS[cur].fill})` }} 
               />
             )}
 
-            {[[0, 0, COLORS.RED], [9, 0, COLORS.GREEN], [9, 9, COLORS.YELLOW], [0, 9, COLORS.BLUE]].map(([cx, cy, col], i) => (
+            {[[0, 0, COLORS.YELLOW], [9, 0, COLORS.BLUE], [9, 9, COLORS.RED], [0, 9, COLORS.GREEN]].map(([cx, cy, col], i) => (
               <g key={`base${i}`}>
                 <rect x={cx * CELL} y={cy * CELL} width={6 * CELL} height={6 * CELL} fill={col.fill} />
-                <rect x={(cx + 1) * CELL} y={(cy + 1) * CELL} width={4 * CELL} height={4 * CELL} fill="#FFFFFF" rx="8" />
+                <circle cx={(cx + 3) * CELL} cy={(cy + 3) * CELL} r={2.4 * CELL} fill="#FFFFFF" />
               </g>
             ))}
             
             {ORDER.flatMap(pk => HOME_SLOTS[pk].map(([cx, cy], i) => (
-              <circle key={`slot${pk}${i}`} cx={cx * CELL} cy={cy * CELL} r={CELL * .45} fill="#FFFFFF" stroke={COLORS[pk].fill} strokeWidth="2.5" strokeDasharray="4 4" />
+              <polygon 
+                key={`slot${pk}${i}`} 
+                points={hexPts(cx * CELL, cy * CELL, CELL * 0.45)} 
+                fill="#FFFFFF" stroke={COLORS[pk].fill} strokeWidth="2.5" strokeDasharray="4 4" 
+              />
             )))}
 
-            <polygon points={`${cx0},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0},${cy0 + cs}`} fill={COLORS.RED.fill} />
-            <polygon points={`${cx0},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0}`} fill={COLORS.GREEN.fill} />
-            <polygon points={`${cx0 + cs},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0 + cs}`} fill={COLORS.YELLOW.fill} />
-            <polygon points={`${cx0},${cy0 + cs} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0 + cs}`} fill={COLORS.BLUE.fill} />
+            <polygon points={`${cx0},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0},${cy0 + cs}`} fill={COLORS.YELLOW.fill} />
+            <polygon points={`${cx0},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0}`} fill={COLORS.BLUE.fill} />
+            <polygon points={`${cx0 + cs},${cy0} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0 + cs}`} fill={COLORS.RED.fill} />
+            <polygon points={`${cx0},${cy0 + cs} ${cx0 + cm},${cy0 + cm} ${cx0 + cs},${cy0 + cs}`} fill={COLORS.GREEN.fill} />
             <circle cx={cx0 + cm} cy={cy0 + cm} r={cm * .2} fill="#FFFFFF" stroke="#E2E8F0" strokeWidth="2" />
 
             {ORDER.flatMap(pk => {
