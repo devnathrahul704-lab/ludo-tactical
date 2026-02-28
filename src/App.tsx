@@ -1,8 +1,5 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef, useReducer } from "react";
-// ... rest of your code stays exactly the same
-
-import React, { useState, useEffect, useRef, useReducer } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getDatabase,
