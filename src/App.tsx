@@ -13,6 +13,7 @@ const firebaseConfig = {
   messagingSenderId: "1018868732143",
   appId: "1:1018868732143:web:1671d193e475b87fea0b1a"
 };
+
 let db = null;
 try {
   if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
@@ -56,14 +57,14 @@ const playSound = (type) => {
     } else if (type === 'thud') {
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(150, now);
-      osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-      osc.start(now); osc.stop(now + 0.15);
+      osc.frequency.exponentialRampToValueAtTime(40, now + 0.1);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      osc.start(now); osc.stop(now + 0.1);
     } else if (type === 'ping') {
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, now); // C5
-      osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+      osc.frequency.setValueAtTime(523.25, now); 
+      osc.frequency.setValueAtTime(659.25, now + 0.1); 
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(0.05, now + 0.02);
       gain.gain.linearRampToValueAtTime(0, now + 0.3);
@@ -77,7 +78,7 @@ const playSound = (type) => {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
       osc.start(now); osc.stop(now + 0.4);
     }
-  } catch (e) { /* Silently fail if browser blocks audio */ }
+  } catch (e) { /* Silently fail if blocked */ }
 };
 
 const CELL = 40, N = 15, W = CELL * N;
@@ -172,6 +173,15 @@ function canMove(pk, pos, roll, state) {
 const initTokens = () => Object.fromEntries(ORDER.map(pk => [pk, Array(4).fill(null).map(() => ({ pos: -1 }))]));
 const initConsec = () => Object.fromEntries(ORDER.map(pk => [pk, 0]));
 
+// FIX: New Turn Logic skips players who have already won
+const getNextTurnIdx = (currentTi, playersObj, winnersList = []) => {
+  let ni = (currentTi + 1) % 4;
+  while ((!playersObj[ORDER[ni]] || winnersList.includes(ORDER[ni])) && ni !== currentTi) { 
+      ni = (ni + 1) % 4; 
+  }
+  return ni;
+};
+
 function gameReducer(state, action) {
   if (action.type === 'OVERRIDE_STATE') return action.payload;
   if (!state) return null;
@@ -182,22 +192,15 @@ function gameReducer(state, action) {
 
   const dName = (pk) => state.players[pk]?.name || COLORS[pk].name;
   const cur = ORDER[state.ti];
-
-  const getNextTurnIdx = (currentTi, playersObj) => {
-    let ni = (currentTi + 1) % 4;
-    while (!playersObj[ORDER[ni]] && ni !== currentTi) { ni = (ni + 1) % 4; }
-    return ni;
-  };
-
   let nextState = { ...state };
 
   switch (action.type) {
     case 'START_GAME':
-      nextState = { ...state, phase: 'playing', msg: `[ SYSTEM ] ${dName(cur).toUpperCase()}'S TURN TO ROLL` };
+      nextState = { ...state, phase: 'playing', winners: [], isGameOver: false, msg: `[ SYSTEM ] ${dName(cur).toUpperCase()}'S TURN TO ROLL` };
       break;
     
     case 'RESTART_GAME':
-      nextState = { ...state, phase: 'lobby', tokens: initTokens(), consec: initConsec(), ti: 0, rolled: null, hasRolled: false, winner: null, msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...' };
+      nextState = { ...state, phase: 'lobby', tokens: initTokens(), consec: initConsec(), ti: 0, rolled: null, hasRolled: false, winners: [], isGameOver: false, msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...' };
       break;
 
     case 'FINISH_ROLL': {
@@ -207,7 +210,7 @@ function gameReducer(state, action) {
       if (final === 6) { 
         newConsec[cur] += 1; 
         if (newConsec[cur] === 3) {
-          const ni = getNextTurnIdx(state.ti, state.players);
+          const ni = getNextTurnIdx(state.ti, state.players, state.winners || []);
           nextState = { ...state, consec: { ...state.consec, [cur]: 0 }, rolled: null, hasRolled: false, ti: ni, msg: `[ PENALTY ] 3 SIXES. TURN FORFEITED.` };
           break;
         }
@@ -219,7 +222,7 @@ function gameReducer(state, action) {
         msg: hasAny ? `[ ACTION ] ${dName(cur).toUpperCase()} ROLLED ${final}. SELECT UNIT.` : `[ INFO ] NO VALID MOVES FOR ${dName(cur).toUpperCase()}.`
       };
       if (!hasAny) {
-         const ni = getNextTurnIdx(state.ti, state.players);
+         const ni = getNextTurnIdx(state.ti, state.players, state.winners || []);
          nextState = { ...nextState, consec: { ...state.consec, [cur]: 0 }, ti: ni, hasRolled: false, rolled: null, msg: `NO VALID MOVES. ${dName(ORDER[ni]).toUpperCase()}'S TURN.` };
       }
       break;
@@ -256,19 +259,32 @@ function gameReducer(state, action) {
 
       if (newPos >= 56) getsExtraTurn = true;
 
-      if (newTokens[pk].every(t => t.pos >= 56)) {
-        nextState = { ...state, tokens: newTokens, winner: pk, hasRolled: false, msg: `🏆 MATCH COMPLETE: ${dName(pk).toUpperCase()} WINS.` };
+      // FIX: Multiple Winners Logic
+      let newWinners = state.winners ? [...state.winners] : [];
+      if (newTokens[pk].every(t => t.pos >= 56) && !newWinners.includes(pk)) {
+          newWinners.push(pk);
+      }
+      
+      const activeCount = Object.keys(state.players).length;
+      const reqToWin = activeCount <= 2 ? 1 : 2; // Ends when 1 wins (2p) or 2 win (3-4p)
+      const isGameOver = newWinners.length >= reqToWin;
+
+      if (isGameOver) {
+        nextState = { ...state, tokens: newTokens, winners: newWinners, isGameOver: true, hasRolled: false, msg: `🏆 MATCH COMPLETE: ${newWinners.map(w=>dName(w).toUpperCase()).join(' & ')} WIN.` };
+      } else if (newWinners.includes(pk)) {
+        const ni = getNextTurnIdx(state.ti, state.players, newWinners);
+        nextState = { ...state, tokens: newTokens, winners: newWinners, consec: { ...state.consec, [cur]: 0 }, ti: ni, hasRolled: false, rolled: null, msg: `🎉 ${dName(pk).toUpperCase()} FINISHED! ${dName(ORDER[ni]).toUpperCase()}'S TURN.` };
       } else if (getsExtraTurn) {
-        nextState = { ...state, tokens: newTokens, hasRolled: false, rolled: null, msg: `[ BONUS ] ${dName(cur).toUpperCase()} GRANTED EXTRA TURN.` };
+        nextState = { ...state, tokens: newTokens, winners: newWinners, hasRolled: false, rolled: null, msg: `[ BONUS ] ${dName(cur).toUpperCase()} GRANTED EXTRA TURN.` };
       } else {
-        const ni = getNextTurnIdx(state.ti, state.players);
-        nextState = { ...state, tokens: newTokens, consec: { ...state.consec, [cur]: 0 }, ti: ni, hasRolled: false, rolled: null, msg: `[ SYSTEM ] ${dName(ORDER[ni]).toUpperCase()}'S TURN TO ROLL` };
+        const ni = getNextTurnIdx(state.ti, state.players, newWinners);
+        nextState = { ...state, tokens: newTokens, winners: newWinners, consec: { ...state.consec, [cur]: 0 }, ti: ni, hasRolled: false, rolled: null, msg: `[ SYSTEM ] ${dName(ORDER[ni]).toUpperCase()}'S TURN TO ROLL` };
       }
       break;
     }
     
     case 'NEXT_TURN': {
-      const ni = getNextTurnIdx(state.ti, state.players);
+      const ni = getNextTurnIdx(state.ti, state.players, state.winners || []);
       nextState = { ...state, consec: { ...state.consec, [cur]: 0 }, ti: ni, hasRolled: false, rolled: null, msg: `[ SYSTEM ] ${dName(ORDER[ni]).toUpperCase()}'S TURN TO ROLL` };
       break;
     }
@@ -304,8 +320,8 @@ function gameReducer(state, action) {
       break;
     }
     case 'FORCE_WIN': {
-      if (state.winner) return state; 
-      nextState = { ...state, winner: action.payload, msg: `🏆 ${dName(action.payload).toUpperCase()} WINS BY FORFEIT`, hasRolled: false };
+      if (state.isGameOver) return state; 
+      nextState = { ...state, winners: [action.payload], isGameOver: true, msg: `🏆 ${dName(action.payload).toUpperCase()} WINS BY FORFEIT`, hasRolled: false };
       break;
     }
   }
@@ -340,7 +356,14 @@ function Token({ fill, dark, r, clickable }) {
   const pts3 = hexPts(0, 0, r * 0.35);
 
   return (
-    <g style={{ cursor: clickable ? 'pointer' : 'default', touchAction: 'manipulation' }}>
+    <g 
+      className={clickable ? "token-clickable" : ""}
+      style={{ 
+        cursor: clickable ? 'pointer' : 'default', 
+        touchAction: 'manipulation',
+        '--pulse-color': fill
+      }}
+    >
       {clickable && <circle r={r + 15} fill="transparent" />}
       {clickable && <circle r={r + 8} fill="none" stroke={fill} strokeWidth="2.5" strokeDasharray="4 4" className="spin-ring" style={{ pointerEvents: 'none' }} />}
       <polygon points={pts1} transform="translate(2,4)" fill="rgba(0,0,0,0.2)" style={{ pointerEvents: 'none' }} />
@@ -350,6 +373,73 @@ function Token({ fill, dark, r, clickable }) {
     </g>
   );
 }
+
+// FIX: New Component to animate token steps visually across cells
+const AnimatedToken = ({ pk, idx, logicalPos, clickable, onClick, byCell }) => {
+  const [visPos, setVisPos] = useState(logicalPos);
+
+  useEffect(() => {
+    if (logicalPos === visPos) return;
+
+    if (logicalPos === -1) {
+        setVisPos(-1); // Instant snap back to base if killed
+        return;
+    }
+    
+    if (visPos === -1 && logicalPos === 0) {
+        playSound('thud');
+        setVisPos(0); // Snap out of base instantly
+        return;
+    }
+
+    if (logicalPos > visPos) {
+        const timer = setTimeout(() => {
+            playSound('thud');
+            setVisPos(prev => prev + 1);
+        }, 100); // 100ms per step animation
+        return () => clearTimeout(timer);
+    }
+    
+    setVisPos(logicalPos);
+  }, [logicalPos, visPos]);
+
+  let targetX, targetY;
+  let rToken = CELL * 0.35; 
+
+  if (visPos === -1) {
+      const [cx, cy] = HOME_SLOTS[pk][idx];
+      targetX = cx * CELL; targetY = cy * CELL;
+  } else {
+      rToken = CELL * 0.28; 
+      const c = getCell(pk, visPos);
+      if (!c) return null;
+      let ox = 0, oy = 0;
+      
+      // Only apply grouping offsets if it has finished moving
+      if (visPos === logicalPos) {
+          const k = `${c[0]},${c[1]}`;
+          const tksInCell = byCell[k] || [];
+          const stackIdx = tksInCell.findIndex(tk => tk.pk === pk && tk.idx === idx);
+          if (stackIdx !== -1) {
+              const offs = getStackOffsets(tksInCell.length);
+              const arr = offs[stackIdx] || [0, 0];
+              ox = arr[0]; oy = arr[1];
+          }
+      }
+      targetX = c[1] * CELL + CELL / 2 + ox;
+      targetY = c[0] * CELL + CELL / 2 + oy;
+  }
+
+  return (
+      <g 
+          style={{ transform: `translate(${targetX}px, ${targetY}px)`, transition: 'transform 0.1s linear' }} 
+          onClick={onClick}
+      >
+          <Token fill={COLORS[pk].fill} dark={COLORS[pk].dark} r={rToken} clickable={clickable && visPos === logicalPos} />
+      </g>
+  );
+};
+
 
 function Dice({ value, rolling, onClick, isClickable, activeColor, dim }) {
   const sz = 56, dots = {
@@ -416,8 +506,8 @@ const PlayerCard = ({ pk, state }) => {
     </div>
   );
 
-  const isActive = state.ti === ORDER.indexOf(pk) && !state.winner;
-  const isWinner = state.winner === pk;
+  const isWinner = state.winners?.includes(pk);
+  const isActive = state.ti === ORDER.indexOf(pk) && !state.isGameOver && !isWinner;
   const isOffline = p.isOnline === false;
 
   return (
@@ -432,7 +522,7 @@ const PlayerCard = ({ pk, state }) => {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-           <span style={{ color: 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>
+           <span style={{ color: isWinner ? color.fill : 'white', fontWeight: 'bold', fontSize: 13, letterSpacing: '1px' }}>
              {p.name.substring(0,8).toUpperCase()} {isWinner && '🏆'}
            </span>
            {isOffline && <span style={{ background: '#FF4655', color: '#000', fontSize: 8, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold' }}>OFFLINE</span>}
@@ -470,6 +560,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0); 
   const chatEndRef = useRef(null);
   
   const prevChatLenRef = useRef(0);
@@ -532,11 +623,24 @@ export default function App() {
   useEffect(() => {
     if (chatMessages.length > prevChatLenRef.current && prevChatLenRef.current !== 0) {
       const lastMsg = chatMessages[chatMessages.length - 1];
-      if (lastMsg.sender !== myName) playSound('ping');
+      if (lastMsg.sender !== myName) {
+        playSound('ping');
+        if (!isChatOpen) {
+          setUnreadCount(prev => prev + 1);
+        }
+      }
     }
     prevChatLenRef.current = chatMessages.length;
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, isChatOpen, myName]);
+
+  const toggleChat = () => {
+    playSound('click');
+    setIsChatOpen(prev => {
+      if (!prev) setUnreadCount(0); 
+      return !prev;
+    });
+  };
 
   useEffect(() => {
     const savedSession = sessionStorage.getItem('ludo_session');
@@ -584,11 +688,11 @@ export default function App() {
     const cur = ORDER[state.ti];
     const isMyTurn = state.players?.[cur]?.id === myId;
     
-    if (isMyTurn && !wasMyTurnRef.current && state.phase === 'playing' && !state.hasRolled && !state.winner) {
+    if (isMyTurn && !wasMyTurnRef.current && state.phase === 'playing' && !state.hasRolled && !state.isGameOver) {
        playSound('turn');
     }
     wasMyTurnRef.current = isMyTurn;
-  }, [state?.ti, state?.phase, state?.hasRolled, state?.winner, myId]);
+  }, [state?.ti, state?.phase, state?.hasRolled, state?.isGameOver, myId]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -605,14 +709,14 @@ export default function App() {
   };
 
   const adjustedNow = now + serverOffsetRef.current;
-  const rawTimeLeft = state && state.phase === 'playing' && !state.winner 
+  const rawTimeLeft = state && state.phase === 'playing' && !state.isGameOver 
     ? 20 - Math.floor((adjustedNow - (state.lastUpdatedAt || adjustedNow)) / 1000)
     : 20;
     
   const displayTimeLeft = Math.max(0, rawTimeLeft);
 
   useEffect(() => {
-    if (!state || state.phase !== 'playing' || !!state.winner || rolling) return;
+    if (!state || state.phase !== 'playing' || state.isGameOver || rolling) return;
 
     const cur = ORDER[state.ti];
     const isMyTurn = state.players?.[cur]?.id === myId;
@@ -628,7 +732,7 @@ export default function App() {
     else if (rawTimeLeft === -2 && isHost && !isMyTurn) { forceAction(); }
     else if (rawTimeLeft <= -4 && !isHost && !isMyTurn) { forceAction(); }
 
-  }, [rawTimeLeft, state?.phase, state?.winner, rolling, myId, state?.hostId, state?.ti, state?.players]);
+  }, [rawTimeLeft, state?.phase, state?.isGameOver, rolling, myId, state?.hostId, state?.ti, state?.players]);
 
   useEffect(() => {
     if (state) {
@@ -643,9 +747,10 @@ export default function App() {
           }
       }
 
-      if (state.phase === 'playing') {
+      if (state.phase === 'playing' && !state.isGameOver) {
           const onlineColors = activeColors.filter(pk => state.players[pk].isOnline !== false);
-          if (onlineColors.length === 1 && !state.winner && state.players[onlineColors[0]].id === myId) {
+          // Auto win if everyone else leaves
+          if (onlineColors.length === 1 && state.players[onlineColors[0]].id === myId) {
               if (!forceWinSentRef.current) {
                   forceWinSentRef.current = true;
                   setTimeout(() => dispatchToFirebase({ type: 'FORCE_WIN', payload: onlineColors[0] }), 500);
@@ -669,6 +774,7 @@ export default function App() {
       players: { YELLOW: { id: myId, name: myName, avatar, isOnline: true } },
       tokens: initTokens(), ti: 0, rolled: null, hasRolled: false,
       msg: '[ SYSTEM ] STANDBY. WAITING FOR PLAYERS...', consec: initConsec(), 
+      winners: [], isGameOver: false,
       lastUpdatedAt: Date.now() + serverOffsetRef.current 
     };
     set(ref(db, `ludo-rooms/${code}`), initial);
@@ -775,7 +881,7 @@ export default function App() {
 
   function rollDice() {
     const cur = ORDER[state.ti];
-    if (rolling || state.hasRolled || state.winner || state.players?.[cur]?.id !== myId) return;
+    if (rolling || state.hasRolled || state.isGameOver || state.players?.[cur]?.id !== myId) return;
     
     setRolling(true);
     const final = Math.floor(Math.random() * 6) + 1; 
@@ -797,11 +903,9 @@ export default function App() {
 
   function clickToken(pk, idx) {
     const cur = ORDER[state.ti];
-    if (pk !== cur || !state.hasRolled || state.winner || state.players?.[cur]?.id !== myId) return;
+    if (pk !== cur || !state.hasRolled || state.isGameOver || state.players?.[cur]?.id !== myId) return;
     const currentPos = state.tokens[pk][idx].pos;
     if (!canMove(pk, currentPos, state.rolled, state)) return;
-    
-    playSound('thud');
 
     const targetPos = currentPos < 0 ? 0 : currentPos + state.rolled;
     if (targetPos >= 56) triggerParticles(7, 7, COLORS[pk].fill);
@@ -829,7 +933,7 @@ export default function App() {
       <div className="chat-overlay">
         <div style={{ background: '#111', padding: '12px', fontSize: 12, fontWeight: 'bold', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>COMM LINK</span>
-          <button onClick={() => { playSound('click'); setIsChatOpen(false); }} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+          <button onClick={toggleChat} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
         </div>
         <div className="chat-messages">
           {chatMessages?.map((msg, i) => (
@@ -848,7 +952,6 @@ export default function App() {
     ) : null
   );
 
-  // ── NEW MOBILE PWA CSS POLISH ──
   const globalCss = `
     * { 
       box-sizing: border-box; 
@@ -881,7 +984,34 @@ export default function App() {
     }
     .neon-text { text-shadow: 0 0 10px rgba(255,255,255,0.3); }
     .spin-ring { transform-origin: center; animation: spin 3s linear infinite; }
+    
     @keyframes spin { 100% { transform: rotate(360deg); } }
+    
+    @keyframes pulse-glow {
+      0% { filter: drop-shadow(0 0 2px var(--pulse-color)); transform: scale(1); }
+      50% { filter: drop-shadow(0 0 15px var(--pulse-color)); transform: scale(1.15); }
+      100% { filter: drop-shadow(0 0 2px var(--pulse-color)); transform: scale(1); }
+    }
+    .token-clickable {
+      animation: pulse-glow 1.5s infinite;
+      transform-origin: center;
+    }
+
+    .chat-badge {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      background: #FF4655;
+      color: #FFF;
+      border-radius: 10px;
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: bold;
+      box-shadow: 0 0 8px rgba(255, 70, 85, 0.8);
+      pointer-events: none;
+      z-index: 10;
+    }
+
     .top-hud { padding: 12px 20px; display: flex; justify-content: space-between; border-bottom: 1px solid #222; font-size: 11px; letter-spacing: 1px; color: #888; font-weight: bold; flex-shrink: 0; background: rgba(8, 10, 12, 0.5); align-items: center; }
     .game-arena { flex: 1; display: grid; align-items: center; justify-items: center; padding: 10px; gap: 16px; width: 100%; max-width: 900px; margin: 0 auto; }
     .board-container { position: relative; border-radius: 8px; padding: 6px; background: #FFFFFF; border: 4px solid #1E293B; box-shadow: 0 10px 30px rgba(0,0,0,0.8); width: 100%; aspect-ratio: 1; }
@@ -971,7 +1101,10 @@ export default function App() {
         <div style={{ color: '#555', fontSize: 12, fontWeight: 'bold', letterSpacing: '2px', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>MATCH ID // <span style={{color: '#FFF'}}>{roomId}</span></div>
           <div style={{display: 'flex', gap: 10}}>
-             <button onClick={() => { playSound('click'); setIsChatOpen(!isChatOpen); }} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
+             <div style={{ position: 'relative' }}>
+                <button onClick={toggleChat} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
+                {unreadCount > 0 && <span className="chat-badge">{unreadCount}</span>}
+             </div>
              <button onClick={copyRoomCode} style={{ background: '#222', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>COPY</button>
              <button onClick={handleLeaveMatch} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>LEAVE</button>
           </div>
@@ -1007,7 +1140,7 @@ export default function App() {
   }
 
   const cur = ORDER[state.ti];
-  const displayColor = state.winner ? COLORS[state.winner] : COLORS[cur];
+  const displayColor = state.isGameOver && state.winners?.length > 0 ? COLORS[state.winners[0]] : COLORS[cur];
   const activePlayer = state.players?.[cur];
   const isMyTurn = activePlayer && activePlayer.id === myId;
   const isHost = state.hostId === myId;
@@ -1047,8 +1180,11 @@ export default function App() {
       <div className="top-hud">
         <div>ID: <span style={{color: '#FFF'}}>{roomId}</span></div>
         <div style={{display: 'flex', gap: '10px'}}>
-           <button onClick={() => { playSound('click'); setIsChatOpen(!isChatOpen); }} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
-           {state.winner && isHost && (
+           <div style={{ position: 'relative' }}>
+              <button onClick={toggleChat} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
+              {unreadCount > 0 && <span className="chat-badge">{unreadCount}</span>}
+           </div>
+           {state.isGameOver && isHost && (
              <button onClick={() => { playSound('click'); dispatchToFirebase({type: 'RESTART_GAME'}); }} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>RESTART MATCH</button>
            )}
            <button onClick={handleLeaveMatch} style={{background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>LEAVE MATCH</button>
@@ -1064,7 +1200,7 @@ export default function App() {
             <rect width={W} height={W} fill={BOARD_BG} />
             <BoardBackground />
             
-            {!state.winner && (
+            {!state.isGameOver && (
               <rect 
                 x={glowCoords.x} 
                 y={glowCoords.y} 
@@ -1097,34 +1233,18 @@ export default function App() {
             {ORDER.flatMap(pk => {
               if (!state.players?.[pk] || !state.tokens?.[pk]) return [];
               return state.tokens[pk].map((t, idx) => {
-                const clickable = pk === cur && state.hasRolled && canMove(pk, t.pos, state.rolled, state) && isMyTurn;
-                let targetX, targetY;
-                let rToken = CELL * 0.35; 
-
-                if (t.pos === -1) {
-                  const [cx, cy] = HOME_SLOTS[pk][idx];
-                  targetX = cx * CELL; targetY = cy * CELL;
-                } else {
-                  rToken = CELL * 0.28; 
-                  const c = getCell(pk, t.pos);
-                  if (!c) return null;
-                  const k = `${c[0]},${c[1]}`;
-                  const tksInCell = byCell[k] || [];
-                  const stackIdx = tksInCell.findIndex(tk => tk.pk === pk && tk.idx === idx);
-                  const offs = getStackOffsets(tksInCell.length);
-                  const [ox, oy] = offs[stackIdx] || [0, 0];
-                  
-                  targetX = c[1] * CELL + CELL / 2 + ox;
-                  targetY = c[0] * CELL + CELL / 2 + oy;
-                }
-
+                const clickable = pk === cur && state.hasRolled && canMove(pk, t.pos, state.rolled, state) && isMyTurn && !state.isGameOver;
+                
                 return (
-                  <g key={`token-${pk}-${idx}`} 
-                    style={{ transform: `translate(${targetX}px, ${targetY}px)`, transition: 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)' }} 
+                  <AnimatedToken 
+                    key={`token-${pk}-${idx}`}
+                    pk={pk}
+                    idx={idx}
+                    logicalPos={t.pos}
+                    clickable={clickable}
                     onClick={() => clickToken(pk, idx)}
-                  >
-                    <Token fill={COLORS[pk].fill} dark={COLORS[pk].dark} r={rToken} clickable={clickable} />
-                  </g>
+                    byCell={byCell}
+                  />
                 );
               });
             })}
@@ -1143,12 +1263,12 @@ export default function App() {
               value={state.rolled || visualDice} 
               rolling={rolling} 
               onClick={rollDice} 
-              isClickable={isMyTurn && !state.hasRolled && !state.winner} 
+              isClickable={isMyTurn && !state.hasRolled && !state.isGameOver} 
               activeColor={displayColor} 
-              dim={state.hasRolled || !!state.winner}
+              dim={state.hasRolled || state.isGameOver}
             />
           </div>
-          {!state.winner && state.phase === 'playing' && (
+          {!state.isGameOver && state.phase === 'playing' && (
              <div style={{ fontSize: 10, color: displayTimeLeft <= 5 ? '#FF4655' : (isMyTurn ? displayColor.fill : '#888'), marginTop: 10, letterSpacing: '2px', fontWeight: 'bold' }}>
                {isMyTurn ? (state.hasRolled ? `SELECT UNIT (${displayTimeLeft}S)` : `AWAITING ROLL (${displayTimeLeft}S)`) : `STANDBY (${displayTimeLeft}S)`}
              </div>
@@ -1156,9 +1276,9 @@ export default function App() {
         </div>
         <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
           <button 
-            className={`btn-action ${isMyTurn && !state.hasRolled && !state.winner ? 'active' : ''}`}
-            style={isMyTurn && !state.hasRolled && !state.winner ? { background: displayColor.fill, borderColor: displayColor.fill } : {}}
-            onClick={rollDice} disabled={rolling || !isMyTurn || state.hasRolled || !!state.winner}
+            className={`btn-action ${isMyTurn && !state.hasRolled && !state.isGameOver ? 'active' : ''}`}
+            style={isMyTurn && !state.hasRolled && !state.isGameOver ? { background: displayColor.fill, borderColor: displayColor.fill } : {}}
+            onClick={rollDice} disabled={rolling || !isMyTurn || state.hasRolled || state.isGameOver}
           >
             ROLL
           </button>
