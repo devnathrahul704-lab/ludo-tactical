@@ -13,7 +13,6 @@ const firebaseConfig = {
   messagingSenderId: "1018868732143",
   appId: "1:1018868732143:web:1671d193e475b87fea0b1a"
 };
-
 let db = null;
 try {
   if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
@@ -296,8 +295,6 @@ function Token({ fill, dark, r, clickable }) {
   );
 }
 
-// FIX: Decoupled Dice visuals from clickability. 
-// Now it always shows the active player's bright neon color!
 function Dice({ value, rolling, onClick, isClickable, activeColor, dim }) {
   const sz = 56, dots = {
     1: [[50, 50]], 2: [[25, 25], [75, 75]], 3: [[25, 25], [50, 50], [75, 75]],
@@ -421,6 +418,18 @@ export default function App() {
 
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
+
+  // ── NEW CUSTOM ALERT SYSTEM ──
+  const [toast, setToast] = useState({ visible: false, message: '', type: 'error' });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (message, type = 'error') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ visible: true, message, type });
+    toastTimerRef.current = setTimeout(() => {
+      setToast(prev => ({ ...prev, visible: false }));
+    }, 3000);
+  };
 
   useEffect(() => {
     if (!db) return;
@@ -576,7 +585,7 @@ export default function App() {
   useEffect(() => { return () => clearTimeout(rollTimeoutRef.current); }, []);
 
   const handleCreateRoom = () => {
-    if (!myName.trim()) return alert("Enter Callsign.");
+    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); // NEW UI
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
     const initial = {
@@ -592,8 +601,8 @@ export default function App() {
   };
 
   const handleJoinRoom = async () => {
-    if (!myName.trim()) return alert("Enter Callsign.");
-    if (!inputCode.trim()) return alert("Enter Match ID.");
+    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); // NEW UI
+    if (!inputCode.trim()) return showToast("ENTER MATCH ID.", 'error'); // NEW UI
     const code = inputCode.toUpperCase();
     
     let joinStatus = '';
@@ -635,9 +644,9 @@ export default function App() {
       finalColor = assignedColor;
       return roomData;
     }).then(({ committed }) => {
-      if (joinStatus === 'not_found') alert("Match not found.");
-      else if (joinStatus === 'in_progress') alert("Match already in progress.");
-      else if (joinStatus === 'full') alert("Lobby is full.");
+      if (joinStatus === 'not_found') showToast("MATCH NOT FOUND.", 'error'); // NEW UI
+      else if (joinStatus === 'in_progress') showToast("MATCH ALREADY IN PROGRESS.", 'error'); // NEW UI
+      else if (joinStatus === 'full') showToast("LOBBY IS FULL.", 'error'); // NEW UI
       else if (committed && finalColor) {
          setRoomId(code); setMyColor(finalColor);
          sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: finalColor }));
@@ -647,7 +656,7 @@ export default function App() {
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomId);
-    alert("Match ID copied to clipboard!");
+    showToast("MATCH ID COPIED TO CLIPBOARD.", 'success'); // NEW UI
   };
 
   const handleLeaveMatch = () => {
@@ -714,6 +723,23 @@ export default function App() {
     if (targetPos >= 56) triggerParticles(7, 7, COLORS[pk].fill);
     dispatchToFirebase({ type: 'MOVE_TOKEN', payload: { pk, idx }, expectedTi: state.ti });
   }
+
+  // ── NEW CUSTOM ALERT UI COMPONENT ──
+  const CustomToast = () => (
+    <div style={{
+      position: 'fixed', top: toast.visible ? 20 : -100, left: '50%', transform: 'translateX(-50%)',
+      background: 'rgba(15, 20, 26, 0.95)', border: `1px solid ${toast.type === 'error' ? '#FF4655' : '#00EA8D'}`,
+      color: '#FFF', padding: '12px 24px', borderRadius: '8px', zIndex: 9999,
+      transition: 'top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)', backdropFilter: 'blur(10px)',
+      boxShadow: `0 10px 30px rgba(0,0,0,0.8), 0 0 15px ${toast.type === 'error' ? 'rgba(255, 70, 85, 0.4)' : 'rgba(0, 234, 141, 0.4)'}`,
+      fontWeight: 'bold', fontSize: '12px', letterSpacing: '1px', display: 'flex', alignItems: 'center', gap: '10px'
+    }}>
+      <span style={{ color: toast.type === 'error' ? '#FF4655' : '#00EA8D', fontSize: '16px' }}>
+        {toast.type === 'error' ? '⚠' : '✓'}
+      </span>
+      {toast.message}
+    </div>
+  );
 
   const ChatUI = () => (
     isChatOpen ? (
@@ -791,6 +817,7 @@ export default function App() {
     return (
       <div className="game-layout" style={{ justifyContent: 'center', alignItems: 'center' }}>
         <style>{globalCss}</style>
+        <CustomToast /> {/* TOAST INJECTED HERE */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 20, width: '100%' }}>
           <h1 style={{ fontSize: 'clamp(32px, 8vw, 64px)', fontWeight: 900, letterSpacing: '10px', marginBottom: 10 }} className="neon-text">LUDO<span style={{color: COLORS.RED.fill}}>.</span></h1>
           <p style={{ color: '#666', fontSize: 14, marginBottom: 30, letterSpacing: '4px' }}>TACTICAL MULTIPLAYER</p>
@@ -815,6 +842,10 @@ export default function App() {
             </div>
           )}
         </div>
+        <footer style={{ padding: '20px', textAlign: 'center', opacity: 0.3, fontSize: '10px', color: '#888', maxWidth: '800px', margin: '0 auto', flexShrink: 0 }}>
+          <h2>Play Free Ludo Online Multiplayer</h2>
+          <p>Ludo Tactical is a free, real-time multiplayer browser board game. Create private match rooms, chat with friends, and play classic Ludo online without downloading any apps. Experience the best hexagonal UI tactical board game directly in your browser. Join the arena for intense, synchronized dice rolls and global presence tracking.</p>
+        </footer>
       </div>
     );
   }
@@ -826,6 +857,7 @@ export default function App() {
     return (
       <div className="game-layout" style={{ alignItems: 'center', padding: '20px 20px 40px 20px', overflowY: 'auto' }}>
         <style>{globalCss}</style>
+        <CustomToast /> {/* TOAST INJECTED HERE */}
         <div style={{ color: '#555', fontSize: 12, fontWeight: 'bold', letterSpacing: '2px', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>MATCH ID // <span style={{color: '#FFF'}}>{roomId}</span></div>
           <div style={{display: 'flex', gap: 10}}>
@@ -901,7 +933,7 @@ export default function App() {
   return (
     <div className="game-layout">
       <style>{globalCss}</style>
-      
+      <CustomToast /> {/* TOAST INJECTED HERE */}
       <div className="top-hud">
         <div>ID: <span style={{color: '#FFF'}}>{roomId}</span></div>
         <div style={{display: 'flex', gap: '10px'}}>
@@ -997,7 +1029,6 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
           <div style={{ '--glow-color': displayColor.shadow }}>
-            {/* INCORPORATED UI UPDATE: isClickable isolated from dim states */}
             <Dice 
               value={state.rolled || visualDice} 
               rolling={rolling} 
