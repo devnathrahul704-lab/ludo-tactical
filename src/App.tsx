@@ -13,6 +13,7 @@ const firebaseConfig = {
   messagingSenderId: "1018868732143",
   appId: "1:1018868732143:web:1671d193e475b87fea0b1a"
 };
+
 let db = null;
 try {
   if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
@@ -23,7 +24,65 @@ try {
   console.error("Firebase not initialized:", e);
 }
 
-// ── 1. TACTICAL UI CONFIG ──────────────────────────────────────────────────
+// ── 1. TACTICAL UI & AUDIO CONFIG ──────────────────────────────────────────
+
+// NEW: Web Audio API Synthesizer (Zero Load Time!)
+let audioCtx = null;
+const initAudio = () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+};
+
+const playSound = (type) => {
+  try {
+    const ctx = initAudio();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+
+    if (type === 'click') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, now);
+      osc.frequency.exponentialRampToValueAtTime(1200, now + 0.05);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      osc.start(now); osc.stop(now + 0.1);
+    } else if (type === 'roll') {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(200 + Math.random() * 100, now);
+      gain.gain.setValueAtTime(0.02, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      osc.start(now); osc.stop(now + 0.05);
+    } else if (type === 'thud') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(150, now);
+      osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      osc.start(now); osc.stop(now + 0.15);
+    } else if (type === 'ping') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.02);
+      gain.gain.linearRampToValueAtTime(0, now + 0.3);
+      osc.start(now); osc.stop(now + 0.3);
+    } else if (type === 'turn') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(880, now + 0.1);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+      osc.start(now); osc.stop(now + 0.4);
+    }
+  } catch (e) { /* Silently fail if browser blocks audio */ }
+};
+
 const CELL = 40, N = 15, W = CELL * N;
 const COLORS = {
   RED:    { fill: '#FF4655', dark: '#C42B38', muted: 'rgba(255, 70, 85, 0.15)', name: 'Red', shadow: 'rgba(255, 70, 85, 0.6)' },
@@ -415,15 +474,19 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const chatEndRef = useRef(null);
+  
+  // Audio Hooks
+  const prevChatLenRef = useRef(0);
+  const wasMyTurnRef = useRef(false);
 
   const animRef = useRef(null);
   const rollTimeoutRef = useRef(null);
 
-  // ── NEW CUSTOM ALERT SYSTEM ──
   const [toast, setToast] = useState({ visible: false, message: '', type: 'error' });
   const toastTimerRef = useRef(null);
 
   const showToast = (message, type = 'error') => {
+    playSound('click');
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ visible: true, message, type });
     toastTimerRef.current = setTimeout(() => {
@@ -470,9 +533,15 @@ export default function App() {
     return () => unsubChat();
   }, [roomId]);
 
+  // AUDIO HOOK: Ping on new chat message
   useEffect(() => {
+    if (chatMessages.length > prevChatLenRef.current && prevChatLenRef.current !== 0) {
+      const lastMsg = chatMessages[chatMessages.length - 1];
+      if (lastMsg.sender !== myName) playSound('ping');
+    }
+    prevChatLenRef.current = chatMessages.length;
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages, isChatOpen]);
+  }, [chatMessages, isChatOpen, myName]);
 
   useEffect(() => {
     const savedSession = sessionStorage.getItem('ludo_session');
@@ -514,6 +583,18 @@ export default function App() {
         onDisconnect(myOnlineRef).set(false); 
     }
   }, [roomId, myColor, state?.phase]);
+
+  // AUDIO HOOK: Play chime when it becomes my turn
+  useEffect(() => {
+    if (!state) return;
+    const cur = ORDER[state.ti];
+    const isMyTurn = state.players?.[cur]?.id === myId;
+    
+    if (isMyTurn && !wasMyTurnRef.current && state.phase === 'playing' && !state.hasRolled && !state.winner) {
+       playSound('turn');
+    }
+    wasMyTurnRef.current = isMyTurn;
+  }, [state?.ti, state?.phase, state?.hasRolled, state?.winner, myId]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -585,7 +666,8 @@ export default function App() {
   useEffect(() => { return () => clearTimeout(rollTimeoutRef.current); }, []);
 
   const handleCreateRoom = () => {
-    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); // NEW UI
+    playSound('click');
+    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); 
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
     const initial = {
@@ -601,8 +683,9 @@ export default function App() {
   };
 
   const handleJoinRoom = async () => {
-    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); // NEW UI
-    if (!inputCode.trim()) return showToast("ENTER MATCH ID.", 'error'); // NEW UI
+    playSound('click');
+    if (!myName.trim()) return showToast("ENTER CALLSIGN.", 'error'); 
+    if (!inputCode.trim()) return showToast("ENTER MATCH ID.", 'error'); 
     const code = inputCode.toUpperCase();
     
     let joinStatus = '';
@@ -644,9 +727,9 @@ export default function App() {
       finalColor = assignedColor;
       return roomData;
     }).then(({ committed }) => {
-      if (joinStatus === 'not_found') showToast("MATCH NOT FOUND.", 'error'); // NEW UI
-      else if (joinStatus === 'in_progress') showToast("MATCH ALREADY IN PROGRESS.", 'error'); // NEW UI
-      else if (joinStatus === 'full') showToast("LOBBY IS FULL.", 'error'); // NEW UI
+      if (joinStatus === 'not_found') showToast("MATCH NOT FOUND.", 'error'); 
+      else if (joinStatus === 'in_progress') showToast("MATCH ALREADY IN PROGRESS.", 'error'); 
+      else if (joinStatus === 'full') showToast("LOBBY IS FULL.", 'error'); 
       else if (committed && finalColor) {
          setRoomId(code); setMyColor(finalColor);
          sessionStorage.setItem('ludo_session', JSON.stringify({ savedId: myId, savedName: myName, savedRoom: code, savedColor: finalColor }));
@@ -655,11 +738,13 @@ export default function App() {
   };
 
   const copyRoomCode = () => {
+    playSound('click');
     navigator.clipboard.writeText(roomId);
-    showToast("MATCH ID COPIED TO CLIPBOARD.", 'success'); // NEW UI
+    showToast("MATCH ID COPIED TO CLIPBOARD.", 'success'); 
   };
 
   const handleLeaveMatch = () => {
+    playSound('click');
     sessionStorage.removeItem('ludo_session');
     window.location.reload();
   };
@@ -667,6 +752,7 @@ export default function App() {
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !db || !roomId) return;
+    playSound('click');
     push(ref(db, `ludo-chats/${roomId}`), {
       sender: myName || 'AGENT',
       color: myColor || 'GRAY',
@@ -702,6 +788,7 @@ export default function App() {
     let i = 0;
     const delays = [50, 60, 70, 80, 100, 120, 150];
     const tick = () => {
+      playSound('roll'); // Play noise tick
       const last = i === delays.length - 1;
       setVisualDice(last ? final : Math.ceil(Math.random() * 6));
       if (last) {
@@ -719,12 +806,14 @@ export default function App() {
     if (pk !== cur || !state.hasRolled || state.winner || state.players?.[cur]?.id !== myId) return;
     const currentPos = state.tokens[pk][idx].pos;
     if (!canMove(pk, currentPos, state.rolled, state)) return;
+    
+    playSound('thud'); // Play movement sound
+
     const targetPos = currentPos < 0 ? 0 : currentPos + state.rolled;
     if (targetPos >= 56) triggerParticles(7, 7, COLORS[pk].fill);
     dispatchToFirebase({ type: 'MOVE_TOKEN', payload: { pk, idx }, expectedTi: state.ti });
   }
 
-  // ── NEW CUSTOM ALERT UI COMPONENT ──
   const CustomToast = () => (
     <div style={{
       position: 'fixed', top: toast.visible ? 20 : -100, left: '50%', transform: 'translateX(-50%)',
@@ -746,7 +835,7 @@ export default function App() {
       <div className="chat-overlay">
         <div style={{ background: '#111', padding: '12px', fontSize: 12, fontWeight: 'bold', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>COMM LINK</span>
-          <button onClick={() => setIsChatOpen(false)} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+          <button onClick={() => { playSound('click'); setIsChatOpen(false); }} style={{ background:'transparent', border:'none', color:'#FF4655', cursor:'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
         </div>
         <div className="chat-messages">
           {chatMessages?.map((msg, i) => (
@@ -817,7 +906,7 @@ export default function App() {
     return (
       <div className="game-layout" style={{ justifyContent: 'center', alignItems: 'center' }}>
         <style>{globalCss}</style>
-        <CustomToast /> {/* TOAST INJECTED HERE */}
+        <CustomToast /> 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 20, width: '100%' }}>
           <h1 style={{ fontSize: 'clamp(32px, 8vw, 64px)', fontWeight: 900, letterSpacing: '10px', marginBottom: 10 }} className="neon-text">LUDO<span style={{color: COLORS.RED.fill}}>.</span></h1>
           <p style={{ color: '#666', fontSize: 14, marginBottom: 30, letterSpacing: '4px' }}>TACTICAL MULTIPLAYER</p>
@@ -829,8 +918,8 @@ export default function App() {
 
           {viewState === 'landing' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20, width: '100%', maxWidth: 300 }}>
-              <button onClick={() => setViewState('creating')} style={{ background: 'transparent', border: `2px solid ${COLORS.RED.fill}`, color: COLORS.RED.fill, padding: '16px', borderRadius: 8, fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer', boxShadow: `inset 0 0 10px ${COLORS.RED.shadow}`, touchAction: 'manipulation' }}>INITIALIZE MATCH</button>
-              <button onClick={() => setViewState('joining')} style={{ background: 'transparent', border: `2px solid ${COLORS.BLUE.fill}`, color: COLORS.BLUE.fill, padding: '16px', borderRadius: 8, fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer', boxShadow: `inset 0 0 10px ${COLORS.BLUE.shadow}`, touchAction: 'manipulation' }}>JOIN MATCH</button>
+              <button onClick={() => { playSound('click'); setViewState('creating'); }} style={{ background: 'transparent', border: `2px solid ${COLORS.RED.fill}`, color: COLORS.RED.fill, padding: '16px', borderRadius: 8, fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer', boxShadow: `inset 0 0 10px ${COLORS.RED.shadow}`, touchAction: 'manipulation' }}>INITIALIZE MATCH</button>
+              <button onClick={() => { playSound('click'); setViewState('joining'); }} style={{ background: 'transparent', border: `2px solid ${COLORS.BLUE.fill}`, color: COLORS.BLUE.fill, padding: '16px', borderRadius: 8, fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer', boxShadow: `inset 0 0 10px ${COLORS.BLUE.shadow}`, touchAction: 'manipulation' }}>JOIN MATCH</button>
             </div>
           )}
           {(viewState === 'creating' || viewState === 'joining') && (
@@ -838,7 +927,7 @@ export default function App() {
               <input value={myName} onChange={e => setMyName(e.target.value)} placeholder="CALLSIGN" maxLength={10} style={{ background: 'transparent', border: 'none', borderBottom: '2px solid #555', color: 'white', padding: '12px', fontSize: 16, textAlign: 'center', fontFamily: FONT, outline: 'none', textTransform: 'uppercase' }} />
               {viewState === 'joining' && <input value={inputCode} onChange={e => setInputCode(e.target.value)} placeholder="MATCH ID" maxLength={6} style={{ background: 'transparent', border: 'none', borderBottom: '2px solid #555', color: 'white', padding: '12px', fontSize: 16, textAlign: 'center', fontFamily: FONT, outline: 'none', textTransform: 'uppercase' }} />}
               <button onClick={viewState === 'creating' ? handleCreateRoom : handleJoinRoom} style={{ background: COLORS.GREEN.fill, border: 'none', color: '#000', padding: '16px', borderRadius: 8, fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer', marginTop: 10, boxShadow: `0 0 15px ${COLORS.GREEN.shadow}`, touchAction: 'manipulation' }}>CONNECT</button>
-              <button onClick={() => setViewState('landing')} style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', fontSize: 12, marginTop: 10, letterSpacing: '1px', touchAction: 'manipulation' }}>CANCEL</button>
+              <button onClick={() => { playSound('click'); setViewState('landing'); }} style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', fontSize: 12, marginTop: 10, letterSpacing: '1px', touchAction: 'manipulation' }}>CANCEL</button>
             </div>
           )}
         </div>
@@ -857,11 +946,11 @@ export default function App() {
     return (
       <div className="game-layout" style={{ alignItems: 'center', padding: '20px 20px 40px 20px', overflowY: 'auto' }}>
         <style>{globalCss}</style>
-        <CustomToast /> {/* TOAST INJECTED HERE */}
+        <CustomToast /> 
         <div style={{ color: '#555', fontSize: 12, fontWeight: 'bold', letterSpacing: '2px', width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>MATCH ID // <span style={{color: '#FFF'}}>{roomId}</span></div>
           <div style={{display: 'flex', gap: 10}}>
-             <button onClick={() => setIsChatOpen(!isChatOpen)} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
+             <button onClick={() => { playSound('click'); setIsChatOpen(!isChatOpen); }} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
              <button onClick={copyRoomCode} style={{ background: '#222', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>COPY</button>
              <button onClick={handleLeaveMatch} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px' }}>LEAVE</button>
           </div>
@@ -878,7 +967,7 @@ export default function App() {
                   <div style={{ display: 'flex', justifyItems: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: 18, fontWeight: 'bold', color: '#FFF', flex: 1 }}>{p.avatar} {p.name.toUpperCase()}</span>
                     {isHost && p.id !== myId && (
-                      <button onClick={() => dispatchToFirebase({ type: 'KICK_PLAYER', payload: pk })} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', cursor: 'pointer', fontSize: 10, padding: '6px 10px', borderRadius: 4, touchAction: 'manipulation' }}>KICK</button>
+                      <button onClick={() => { playSound('click'); dispatchToFirebase({ type: 'KICK_PLAYER', payload: pk }); }} style={{ background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', cursor: 'pointer', fontSize: 10, padding: '6px 10px', borderRadius: 4, touchAction: 'manipulation' }}>KICK</button>
                     )}
                   </div>
                 ) : <div style={{ fontSize: 14, color: '#444', letterSpacing: '1px' }}>EMPTY...</div>}
@@ -887,7 +976,7 @@ export default function App() {
           })}
         </div>
         {isHost ? (
-          <button onClick={() => dispatchToFirebase({ type: 'START_GAME' })} disabled={playerCount < 2} style={{ background: 'transparent', border: `2px solid ${COLORS.GREEN.fill}`, color: COLORS.GREEN.fill, padding: '16px 40px', borderRadius: 8, fontSize: 16, fontWeight: 'bold', letterSpacing: '4px', marginTop: 40, cursor: playerCount > 1 ? 'pointer' : 'default', opacity: playerCount > 1 ? 1 : 0.3, boxShadow: playerCount > 1 ? `inset 0 0 15px ${COLORS.GREEN.shadow}` : 'none', touchAction: 'manipulation' }}>
+          <button onClick={() => { playSound('click'); dispatchToFirebase({ type: 'START_GAME' }); }} disabled={playerCount < 2} style={{ background: 'transparent', border: `2px solid ${COLORS.GREEN.fill}`, color: COLORS.GREEN.fill, padding: '16px 40px', borderRadius: 8, fontSize: 16, fontWeight: 'bold', letterSpacing: '4px', marginTop: 40, cursor: playerCount > 1 ? 'pointer' : 'default', opacity: playerCount > 1 ? 1 : 0.3, boxShadow: playerCount > 1 ? `inset 0 0 15px ${COLORS.GREEN.shadow}` : 'none', touchAction: 'manipulation' }}>
             INITIALIZE
           </button>
         ) : <p style={{ color: '#666', marginTop: 40, fontSize: 12, letterSpacing: '2px', textAlign: 'center' }}>AWAITING HOST INITIALIZATION...</p>}
@@ -933,13 +1022,13 @@ export default function App() {
   return (
     <div className="game-layout">
       <style>{globalCss}</style>
-      <CustomToast /> {/* TOAST INJECTED HERE */}
+      <CustomToast /> 
       <div className="top-hud">
         <div>ID: <span style={{color: '#FFF'}}>{roomId}</span></div>
         <div style={{display: 'flex', gap: '10px'}}>
-           <button onClick={() => setIsChatOpen(!isChatOpen)} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
+           <button onClick={() => { playSound('click'); setIsChatOpen(!isChatOpen); }} style={{ background: isChatOpen ? '#FFF' : '#222', color: isChatOpen ? '#000' : 'white', border: 'none', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10, letterSpacing: '1px', fontWeight: 'bold' }}>CHAT</button>
            {state.winner && isHost && (
-             <button onClick={() => dispatchToFirebase({type: 'RESTART_GAME'})} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>RESTART MATCH</button>
+             <button onClick={() => { playSound('click'); dispatchToFirebase({type: 'RESTART_GAME'}); }} style={{background: COLORS.GREEN.fill, border: 'none', color: 'black', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>RESTART MATCH</button>
            )}
            <button onClick={handleLeaveMatch} style={{background: 'transparent', border: '1px solid #FF4655', color: '#FF4655', fontWeight: 'bold', padding: '4px 10px', borderRadius: 4, cursor: 'pointer', touchAction: 'manipulation', fontSize: 10, letterSpacing: '1px'}}>LEAVE MATCH</button>
         </div>
