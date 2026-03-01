@@ -13,7 +13,6 @@ const firebaseConfig = {
   messagingSenderId: "1018868732143",
   appId: "1:1018868732143:web:1671d193e475b87fea0b1a"
 };
-
 let db = null;
 try {
   if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
@@ -26,12 +25,10 @@ try {
 
 // ── 1. TACTICAL UI & AUDIO CONFIG ──────────────────────────────────────────
 
-// NEW: Web Audio API Synthesizer (Zero Load Time!)
-let audioCtx = null;
 const initAudio = () => {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  return audioCtx;
+  if (!window.audioCtx) window.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (window.audioCtx.state === 'suspended') window.audioCtx.resume();
+  return window.audioCtx;
 };
 
 const playSound = (type) => {
@@ -475,7 +472,6 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const chatEndRef = useRef(null);
   
-  // Audio Hooks
   const prevChatLenRef = useRef(0);
   const wasMyTurnRef = useRef(false);
 
@@ -533,7 +529,6 @@ export default function App() {
     return () => unsubChat();
   }, [roomId]);
 
-  // AUDIO HOOK: Ping on new chat message
   useEffect(() => {
     if (chatMessages.length > prevChatLenRef.current && prevChatLenRef.current !== 0) {
       const lastMsg = chatMessages[chatMessages.length - 1];
@@ -584,7 +579,6 @@ export default function App() {
     }
   }, [roomId, myColor, state?.phase]);
 
-  // AUDIO HOOK: Play chime when it becomes my turn
   useEffect(() => {
     if (!state) return;
     const cur = ORDER[state.ti];
@@ -788,7 +782,7 @@ export default function App() {
     let i = 0;
     const delays = [50, 60, 70, 80, 100, 120, 150];
     const tick = () => {
-      playSound('roll'); // Play noise tick
+      playSound('roll');
       const last = i === delays.length - 1;
       setVisualDice(last ? final : Math.ceil(Math.random() * 6));
       if (last) {
@@ -807,7 +801,7 @@ export default function App() {
     const currentPos = state.tokens[pk][idx].pos;
     if (!canMove(pk, currentPos, state.rolled, state)) return;
     
-    playSound('thud'); // Play movement sound
+    playSound('thud');
 
     const targetPos = currentPos < 0 ? 0 : currentPos + state.rolled;
     if (targetPos >= 56) triggerParticles(7, 7, COLORS[pk].fill);
@@ -854,10 +848,37 @@ export default function App() {
     ) : null
   );
 
+  // ── NEW MOBILE PWA CSS POLISH ──
   const globalCss = `
-    * { box-sizing: border-box; }
-    body { margin: 0; overscroll-behavior-y: none; background-color: #080A0C; }
-    .game-layout { display: flex; flex-direction: column; height: 100dvh; background-image: radial-gradient(circle at center, #1B2027 0%, #080A0C 100%); color: #ffffff; font-family: ${FONT}; overflow: hidden; position: relative; }
+    * { 
+      box-sizing: border-box; 
+      -webkit-tap-highlight-color: transparent; 
+      -webkit-touch-callout: none;
+      user-select: none; 
+    }
+    input { 
+      user-select: auto; 
+    }
+    body { 
+      margin: 0; 
+      overscroll-behavior-y: none; 
+      background-color: #080A0C; 
+      touch-action: pan-x pan-y; 
+    }
+    .game-layout { 
+      display: flex; 
+      flex-direction: column; 
+      height: 100dvh; 
+      background-image: radial-gradient(circle at center, #1B2027 0%, #080A0C 100%); 
+      color: #ffffff; 
+      font-family: ${FONT}; 
+      overflow: hidden; 
+      position: relative; 
+      padding-top: env(safe-area-inset-top); 
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+    }
     .neon-text { text-shadow: 0 0 10px rgba(255,255,255,0.3); }
     .spin-ring { transform-origin: center; animation: spin 3s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -897,7 +918,7 @@ export default function App() {
       .avatar-box { width: 40px; height: 40px; font-size: 20px; }
       .player-card { padding: 12px 20px; min-width: 160px; gap: 16px; }
     }
-    .tactical-dock { flex-shrink: 0; background: rgba(10, 13, 18, 0.95); border-top: 1px solid #333; padding: 12px 20px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 10; }
+    .tactical-dock { flex-shrink: 0; background: rgba(10, 13, 18, 0.95); border-top: 1px solid #333; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 10; }
     .btn-action { background: transparent; border: 1px solid #444; color: #888; padding: 12px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; touch-action: manipulation; font-size: 12px; }
     .btn-action.active { color: #000; box-shadow: 0 0 15px var(--glow-color); }
   `;
