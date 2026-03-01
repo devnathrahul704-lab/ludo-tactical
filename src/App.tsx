@@ -173,7 +173,6 @@ function canMove(pk, pos, roll, state) {
 const initTokens = () => Object.fromEntries(ORDER.map(pk => [pk, Array(4).fill(null).map(() => ({ pos: -1 }))]));
 const initConsec = () => Object.fromEntries(ORDER.map(pk => [pk, 0]));
 
-// FIX: New Turn Logic skips players who have already won
 const getNextTurnIdx = (currentTi, playersObj, winnersList = []) => {
   let ni = (currentTi + 1) % 4;
   while ((!playersObj[ORDER[ni]] || winnersList.includes(ORDER[ni])) && ni !== currentTi) { 
@@ -259,14 +258,13 @@ function gameReducer(state, action) {
 
       if (newPos >= 56) getsExtraTurn = true;
 
-      // FIX: Multiple Winners Logic
       let newWinners = state.winners ? [...state.winners] : [];
       if (newTokens[pk].every(t => t.pos >= 56) && !newWinners.includes(pk)) {
           newWinners.push(pk);
       }
       
       const activeCount = Object.keys(state.players).length;
-      const reqToWin = activeCount <= 2 ? 1 : 2; // Ends when 1 wins (2p) or 2 win (3-4p)
+      const reqToWin = activeCount <= 2 ? 1 : 2; 
       const isGameOver = newWinners.length >= reqToWin;
 
       if (isGameOver) {
@@ -357,11 +355,9 @@ function Token({ fill, dark, r, clickable }) {
 
   return (
     <g 
-      className={clickable ? "token-clickable" : ""}
       style={{ 
         cursor: clickable ? 'pointer' : 'default', 
-        touchAction: 'manipulation',
-        '--pulse-color': fill
+        touchAction: 'manipulation'
       }}
     >
       {clickable && <circle r={r + 15} fill="transparent" />}
@@ -374,7 +370,6 @@ function Token({ fill, dark, r, clickable }) {
   );
 }
 
-// FIX: New Component to animate token steps visually across cells
 const AnimatedToken = ({ pk, idx, logicalPos, clickable, onClick, byCell }) => {
   const [visPos, setVisPos] = useState(logicalPos);
 
@@ -382,13 +377,13 @@ const AnimatedToken = ({ pk, idx, logicalPos, clickable, onClick, byCell }) => {
     if (logicalPos === visPos) return;
 
     if (logicalPos === -1) {
-        setVisPos(-1); // Instant snap back to base if killed
+        setVisPos(-1); 
         return;
     }
     
     if (visPos === -1 && logicalPos === 0) {
         playSound('thud');
-        setVisPos(0); // Snap out of base instantly
+        setVisPos(0); 
         return;
     }
 
@@ -396,7 +391,7 @@ const AnimatedToken = ({ pk, idx, logicalPos, clickable, onClick, byCell }) => {
         const timer = setTimeout(() => {
             playSound('thud');
             setVisPos(prev => prev + 1);
-        }, 100); // 100ms per step animation
+        }, 100); 
         return () => clearTimeout(timer);
     }
     
@@ -415,7 +410,6 @@ const AnimatedToken = ({ pk, idx, logicalPos, clickable, onClick, byCell }) => {
       if (!c) return null;
       let ox = 0, oy = 0;
       
-      // Only apply grouping offsets if it has finished moving
       if (visPos === logicalPos) {
           const k = `${c[0]},${c[1]}`;
           const tksInCell = byCell[k] || [];
@@ -986,16 +980,6 @@ export default function App() {
     .spin-ring { transform-origin: center; animation: spin 3s linear infinite; }
     
     @keyframes spin { 100% { transform: rotate(360deg); } }
-    
-    @keyframes pulse-glow {
-      0% { filter: drop-shadow(0 0 2px var(--pulse-color)); transform: scale(1); }
-      50% { filter: drop-shadow(0 0 15px var(--pulse-color)); transform: scale(1.15); }
-      100% { filter: drop-shadow(0 0 2px var(--pulse-color)); transform: scale(1); }
-    }
-    .token-clickable {
-      animation: pulse-glow 1.5s infinite;
-      transform-origin: center;
-    }
 
     .chat-badge {
       position: absolute;
